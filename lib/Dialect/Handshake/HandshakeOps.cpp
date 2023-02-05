@@ -1468,6 +1468,181 @@ void PackOp::print(OpAsmPrinter &p) {
 }
 
 //===----------------------------------------------------------------------===//
+// Dynamatic operations
+//===----------------------------------------------------------------------===//
+
+static ParseResult parseDynamaticMemoryAccessOp(OpAsmParser &parser,
+                                                OperationState &result) {
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> addressOperands,
+      remainingOperands, allOperands;
+  SmallVector<Type, 1> parsedTypes, allTypes;
+  llvm::SMLoc allOperandLoc = parser.getCurrentLocation();
+
+  if (parser.parseLSquare() || parser.parseOperandList(addressOperands) ||
+      parser.parseRSquare() || parser.parseOperandList(remainingOperands) ||
+      parser.parseColon() || parser.parseTypeList(parsedTypes))
+    return failure();
+
+  // The last type will be the data type of the operation; the prior will be the
+  // address types.
+  Type dataType = parsedTypes.back();
+  auto parsedTypesRef = ArrayRef(parsedTypes);
+  result.addTypes(dataType);
+  result.addTypes(parsedTypesRef.drop_back());
+  allOperands.append(addressOperands);
+  allOperands.append(remainingOperands);
+  allTypes.append(parsedTypes);
+  if (parser.resolveOperands(allOperands, allTypes, allOperandLoc,
+                             result.operands))
+    return failure();
+  return success();
+}
+
+template <typename MemOp>
+static void printDynamaticMemoryAccessOp(OpAsmPrinter &p, MemOp op) {
+  p << " [";
+  p << op.getAddresses();
+  p << "] " << op.getData() << " : ";
+  llvm::interleaveComma(op.getAddresses(), p,
+                        [&](Value v) { p << v.getType(); });
+  p << ", " << op.getData().getType();
+}
+
+// MemoryControllerOp
+
+void MemoryControllerOp::build(OpBuilder &builder, OperationState &result,
+                               Value memref, ValueRange inputs, int bbCount,
+                               int ldCount, int stCount, bool isExternal,
+                               int id) {
+
+  // Memory operands
+  SmallVector<Value> operands;
+  operands.push_back(memref);
+  llvm::append_range(operands, inputs);
+  result.addOperands(operands);
+
+  // Data outputs (get their type from memref)
+  auto memrefType = memref.getType().cast<MemRefType>();
+  result.types.append(ldCount, memrefType.getElementType());
+
+  // Memory ID (individual ID for each MemoryOp)
+  Type i32Type = builder.getIntegerType(32);
+  result.addAttribute("id", builder.getIntegerAttr(i32Type, id));
+  result.addAttribute("ldCount", builder.getIntegerAttr(i32Type, ldCount));
+  result.addAttribute("stCount", builder.getIntegerAttr(i32Type, stCount));
+  result.addAttribute("isExternal", builder.getBoolAttr(isExternal));
+}
+
+std::string handshake::MemoryControllerOp::getOperandName(unsigned int idx) {
+  if (idx == 0)
+    return "extmem";
+
+  return getMemoryOperandName(getStCount(), idx - 1);
+}
+
+std::string handshake::MemoryControllerOp::getResultName(unsigned int idx) {
+  return getMemoryResultName(getLdCount(), getStCount(), idx);
+}
+
+// DynamaticLoadOp
+
+void handshake::DynamaticLoadOp::build(OpBuilder &builder,
+                                       OperationState &result, Value memref,
+                                       ValueRange indices) {
+  // Address indices
+  result.addOperands(indices);
+
+  // Data type
+  auto memrefType = memref.getType().cast<MemRefType>();
+
+  // Data output (from load to successor ops)
+  result.types.push_back(memrefType.getElementType());
+
+  // Address outputs (to memory)
+  result.types.append(indices.size(), builder.getIndexType());
+}
+
+ParseResult DynamaticLoadOp::parse(OpAsmParser &parser,
+                                   OperationState &result) {
+  return parseDynamaticMemoryAccessOp(parser, result);
+}
+
+void DynamaticLoadOp::print(OpAsmPrinter &p) {
+  printDynamaticMemoryAccessOp(p, *this);
+}
+
+LogicalResult DynamaticLoadOp::verify() { return verifyMemoryAccessOp(*this); }
+
+std::string handshake::DynamaticLoadOp::getOperandName(unsigned int idx) {
+  unsigned nAddresses = getAddresses().size();
+  std::string opName;
+  if (idx < nAddresses)
+    opName = "addrIn" + std::to_string(idx);
+  else if (idx == nAddresses)
+    opName = "dataFromMem";
+  return opName;
+}
+
+std::string handshake::DynamaticLoadOp::getResultName(unsigned int idx) {
+  std::string resName;
+  if (idx == 0)
+    resName = "dataOut";
+  else
+    resName = "addrOut" + std::to_string(idx - 1);
+  return resName;
+}
+
+// DynamaticStoreOp
+
+void handshake::DynamaticStoreOp::build(OpBuilder &builder,
+                                        OperationState &result,
+                                        Value valueToStore,
+                                        ValueRange indices) {
+
+  // Address indices
+  result.addOperands(indices);
+
+  // Data
+  result.addOperands(valueToStore);
+
+  // Data output (from store to memory)
+  result.types.push_back(valueToStore.getType());
+
+  // Address outputs (from store to memory)
+  result.types.append(indices.size(), builder.getIndexType());
+}
+
+ParseResult DynamaticStoreOp::parse(OpAsmParser &parser,
+                                    OperationState &result) {
+  return parseDynamaticMemoryAccessOp(parser, result);
+}
+
+void DynamaticStoreOp::print(OpAsmPrinter &p) {
+  return printDynamaticMemoryAccessOp(p, *this);
+}
+
+LogicalResult DynamaticStoreOp::verify() { return verifyMemoryAccessOp(*this); }
+
+std::string handshake::DynamaticStoreOp::getOperandName(unsigned int idx) {
+  unsigned nAddresses = getAddresses().size();
+  std::string opName;
+  if (idx < nAddresses)
+    opName = "addrIn" + std::to_string(idx);
+  else if (idx == nAddresses)
+    opName = "dataIn";
+  return opName;
+}
+
+std::string handshake::DynamaticStoreOp::getResultName(unsigned int idx) {
+  std::string resName;
+  if (idx == 0)
+    resName = "dataToMem";
+  else
+    resName = "addrOut" + std::to_string(idx - 1);
+  return resName;
+}
+
+//===----------------------------------------------------------------------===//
 // TableGen'd op method definitions
 //===----------------------------------------------------------------------===//
 

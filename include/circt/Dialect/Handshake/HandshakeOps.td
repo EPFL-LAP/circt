@@ -843,3 +843,67 @@ def PackOp : Handshake_Op<"pack", [
 
   let hasCustomAssemblyFormat = 1;
 }
+
+//===----------------------------------------------------------------------===//
+// Dynamatic operations
+//===----------------------------------------------------------------------===//
+
+def MemoryControllerOp : Handshake_Op<"mem_controller", [
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
+]> {
+  let summary = "memory controller";
+  let description = [{}];
+  let arguments = (ins AnyMemRef:$memref,
+                       Variadic<AnyType>:$inputs,
+                       I32Attr : $bbCount,
+                       I32Attr : $ldCount,
+                       I32Attr : $stCount,
+                       I32Attr : $id,
+                       I1Attr : $isExternal);
+  let results = (outs Variadic<AnyType>:$outputs);
+
+  let skipDefaultBuilders = 1;
+  let builders = [OpBuilder<(
+      ins "Value":$memref, "ValueRange":$inputs, "int":$bbCount, 
+      "int":$ldCount, "int":$stCount, "bool":$isExternal, "int":$id)>
+  ];
+  let assemblyFormat = " `[` `external` `=` $isExternal `]` `[` `bb` `=` $bbCount `,` `ld` `=` $ldCount `,` `st` `=`  $stCount `]` `(` $memref `:` qualified(type($memref)) `)` `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)";
+
+  let extraClassDeclaration = [{
+    mlir::MemRefType getMemRefType() {
+      return getMemref().getType().cast<mlir::MemRefType>();
+    }
+  }];
+}
+
+def DynamaticLoadOp : Handshake_Op<"dynamatic_load", [
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
+]> {
+  let summary = "Dynamatic load operation";
+  let description = [{}];
+
+  let arguments = (ins Variadic<AnyType>:$addresses, AnyType:$data);
+  let results = (outs AnyType:$dataResult, Variadic<AnyType>:$addressResults);
+  let skipDefaultBuilders = 1;
+  let builders = [OpBuilder<(ins "Value":$memref, "ValueRange":$indices)>];
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def DynamaticStoreOp : Handshake_Op<"dynamatic_store", [
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
+]> {
+  let summary = "Dynamatic store operation";
+  let description = [{}];
+
+  let arguments = (ins Variadic<AnyType>:$addresses, AnyType:$data);
+  let results = (outs AnyType:$dataResult, Variadic<AnyType>:$addressResult);
+
+  let builders =
+      [OpBuilder<(ins "Value":$valueToStore, "ValueRange":$indices)>];
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
