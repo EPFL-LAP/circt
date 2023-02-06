@@ -861,7 +861,7 @@ def MemoryControllerOp : Handshake_Op<"mem_controller", [
                        I32Attr : $stCount,
                        I32Attr : $id,
                        I1Attr : $isExternal);
-  let results = (outs Variadic<AnyType>:$outputs);
+  let results = (outs Variadic<AnyType>:$outputs, NoneType:$done);
 
   let skipDefaultBuilders = 1;
   let builders = [OpBuilder<(
@@ -881,7 +881,7 @@ def DynamaticLoadOp : Handshake_Op<"dynamatic_load", [
   DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
 ]> {
-  let summary = "Dynamatic load operation";
+  let summary = "load operation (dynamatic)";
   let description = [{}];
 
   let arguments = (ins Variadic<AnyType>:$addresses, AnyType:$data);
@@ -896,7 +896,7 @@ def DynamaticStoreOp : Handshake_Op<"dynamatic_store", [
   DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
 ]> {
-  let summary = "Dynamatic store operation";
+  let summary = "store operation (dynamatic)";
   let description = [{}];
 
   let arguments = (ins Variadic<AnyType>:$addresses, AnyType:$data);
@@ -906,4 +906,25 @@ def DynamaticStoreOp : Handshake_Op<"dynamatic_store", [
       [OpBuilder<(ins "Value":$valueToStore, "ValueRange":$indices)>];
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
+}
+
+def DynamaticReturnOp : Handshake_Op<"dynamatic_return", []> {
+  let summary = "Handshake dialect return (dynamatic)";
+  let description = [{}];
+
+  let arguments = (ins Variadic<AnyType> : $results);
+
+  let hasVerifier = 1;
+  let assemblyFormat =
+    [{  attr-dict ($results^ `:` type($results))? }];
+}
+
+def EndOp : Handshake_Op<"dynamatic_end", [Terminator]> {
+  let summary = "function endpoint (dynamatic)";
+  let description = [{}];
+
+  let arguments = (ins Variadic<AnyType> : $results);
+
+  let assemblyFormat =
+    [{ attr-dict ($results^ `:` type($results))? }];
 }

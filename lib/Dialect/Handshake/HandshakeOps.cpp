@@ -1468,6 +1468,33 @@ void PackOp::print(OpAsmPrinter &p) {
 }
 
 //===----------------------------------------------------------------------===//
+// TableGen'd op method definitions
+//===----------------------------------------------------------------------===//
+
+LogicalResult ReturnOp::verify() {
+  auto *parent = (*this)->getParentOp();
+  auto function = dyn_cast<handshake::FuncOp>(parent);
+  if (!function)
+    return emitOpError("must have a handshake.func parent");
+
+  // The operand number and types must match the function signature.
+  const auto &results = function.getResultTypes();
+  if (getNumOperands() != results.size())
+    return emitOpError("has ")
+           << getNumOperands() << " operands, but enclosing function returns "
+           << results.size();
+
+  for (unsigned i = 0, e = results.size(); i != e; ++i)
+    if (getOperand(i).getType() != results[i])
+      return emitError() << "type of return operand " << i << " ("
+                         << getOperand(i).getType()
+                         << ") doesn't match function result type ("
+                         << results[i] << ")";
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // Dynamatic operations
 //===----------------------------------------------------------------------===//
 
@@ -1642,18 +1669,17 @@ std::string handshake::DynamaticStoreOp::getResultName(unsigned int idx) {
   return resName;
 }
 
-//===----------------------------------------------------------------------===//
-// TableGen'd op method definitions
-//===----------------------------------------------------------------------===//
+// DynamaticReturnOp
 
-LogicalResult ReturnOp::verify() {
+LogicalResult DynamaticReturnOp::verify() {
   auto *parent = (*this)->getParentOp();
   auto function = dyn_cast<handshake::FuncOp>(parent);
   if (!function)
     return emitOpError("must have a handshake.func parent");
 
-  // The operand number and types must match the function signature.
-  const auto &results = function.getResultTypes();
+  // The operand number and types must match the function signature (minus the
+  // added control-only argument)
+  const auto &results = function.getResultTypes().drop_back(1);
   if (getNumOperands() != results.size())
     return emitOpError("has ")
            << getNumOperands() << " operands, but enclosing function returns "
