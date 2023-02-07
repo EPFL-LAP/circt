@@ -1543,39 +1543,38 @@ void MemoryControllerOp::build(OpBuilder &builder, OperationState &result,
                                int id) {
 
   // Memory operands
-  SmallVector<Value> operands;
-  operands.push_back(memref);
-  llvm::append_range(operands, inputs);
-  result.addOperands(operands);
+  result.addOperands(memref);
+  result.addOperands(inputs);
 
   // Data outputs (get their type from memref)
   auto memrefType = memref.getType().cast<MemRefType>();
   result.types.append(ldCount, memrefType.getElementType());
+  result.types.push_back(builder.getNoneType());
 
-  // Memory ID (individual ID for each MemoryOp)
+  // Memory interface attributes
   Type i32Type = builder.getIntegerType(32);
-  result.addAttribute("id", builder.getIntegerAttr(i32Type, id));
+  result.addAttribute("bbCount", builder.getIntegerAttr(i32Type, bbCount));
   result.addAttribute("ldCount", builder.getIntegerAttr(i32Type, ldCount));
   result.addAttribute("stCount", builder.getIntegerAttr(i32Type, stCount));
   result.addAttribute("isExternal", builder.getBoolAttr(isExternal));
+  result.addAttribute("id", builder.getIntegerAttr(i32Type, id));
 }
 
-std::string handshake::MemoryControllerOp::getOperandName(unsigned int idx) {
+std::string MemoryControllerOp::getOperandName(unsigned int idx) {
   if (idx == 0)
     return "extmem";
 
   return getMemoryOperandName(getStCount(), idx - 1);
 }
 
-std::string handshake::MemoryControllerOp::getResultName(unsigned int idx) {
+std::string MemoryControllerOp::getResultName(unsigned int idx) {
   return getMemoryResultName(getLdCount(), getStCount(), idx);
 }
 
 // DynamaticLoadOp
 
-void handshake::DynamaticLoadOp::build(OpBuilder &builder,
-                                       OperationState &result, Value memref,
-                                       ValueRange indices) {
+void DynamaticLoadOp::build(OpBuilder &builder, OperationState &result,
+                            Value memref, ValueRange indices) {
   // Address indices
   result.addOperands(indices);
 
@@ -1600,7 +1599,7 @@ void DynamaticLoadOp::print(OpAsmPrinter &p) {
 
 LogicalResult DynamaticLoadOp::verify() { return verifyMemoryAccessOp(*this); }
 
-std::string handshake::DynamaticLoadOp::getOperandName(unsigned int idx) {
+std::string DynamaticLoadOp::getOperandName(unsigned int idx) {
   unsigned nAddresses = getAddresses().size();
   std::string opName;
   if (idx < nAddresses)
@@ -1610,7 +1609,7 @@ std::string handshake::DynamaticLoadOp::getOperandName(unsigned int idx) {
   return opName;
 }
 
-std::string handshake::DynamaticLoadOp::getResultName(unsigned int idx) {
+std::string DynamaticLoadOp::getResultName(unsigned int idx) {
   std::string resName;
   if (idx == 0)
     resName = "dataOut";
@@ -1621,10 +1620,8 @@ std::string handshake::DynamaticLoadOp::getResultName(unsigned int idx) {
 
 // DynamaticStoreOp
 
-void handshake::DynamaticStoreOp::build(OpBuilder &builder,
-                                        OperationState &result,
-                                        Value valueToStore,
-                                        ValueRange indices) {
+void DynamaticStoreOp::build(OpBuilder &builder, OperationState &result,
+                             Value valueToStore, ValueRange indices) {
 
   // Address indices
   result.addOperands(indices);
@@ -1650,7 +1647,7 @@ void DynamaticStoreOp::print(OpAsmPrinter &p) {
 
 LogicalResult DynamaticStoreOp::verify() { return verifyMemoryAccessOp(*this); }
 
-std::string handshake::DynamaticStoreOp::getOperandName(unsigned int idx) {
+std::string DynamaticStoreOp::getOperandName(unsigned int idx) {
   unsigned nAddresses = getAddresses().size();
   std::string opName;
   if (idx < nAddresses)
@@ -1660,7 +1657,7 @@ std::string handshake::DynamaticStoreOp::getOperandName(unsigned int idx) {
   return opName;
 }
 
-std::string handshake::DynamaticStoreOp::getResultName(unsigned int idx) {
+std::string DynamaticStoreOp::getResultName(unsigned int idx) {
   std::string resName;
   if (idx == 0)
     resName = "dataToMem";
