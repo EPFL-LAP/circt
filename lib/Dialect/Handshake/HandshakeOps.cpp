@@ -527,9 +527,11 @@ LogicalResult FuncOp::verify() {
     if (!arg.getType().isa<MemRefType>())
       continue;
     if (arg.getUsers().empty() ||
-        !isa<ExternalMemoryOp>(*arg.getUsers().begin()))
+        !(isa<ExternalMemoryOp>(*arg.getUsers().begin()) ||
+          isa<MemoryControllerOp>(*arg.getUsers().begin())))
       return emitOpError("expected that block argument #")
-             << arg.getArgNumber() << " is used by an 'extmemory' operation";
+             << arg.getArgNumber()
+             << " is used by an 'extmemory' or 'memory_controller' operation";
   }
 
   return success();
@@ -1668,26 +1670,44 @@ std::string DynamaticStoreOp::getResultName(unsigned int idx) {
 
 // DynamaticReturnOp
 
+void DynamaticReturnOp::build(OpBuilder &builder, OperationState &result,
+                              ValueRange inputs) {
+  // Return has identical operand and result types
+  result.addOperands(inputs);
+  for (auto arg : inputs)
+    result.types.push_back(arg.getType());
+}
+
 LogicalResult DynamaticReturnOp::verify() {
   auto *parent = (*this)->getParentOp();
   auto function = dyn_cast<handshake::FuncOp>(parent);
   if (!function)
     return emitOpError("must have a handshake.func parent");
 
-  // The operand number and types must match the function signature (minus the
-  // added control-only argument)
-  const auto &results = function.getResultTypes().drop_back(1);
-  if (getNumOperands() != results.size())
+  const auto &results = function.getResultTypes();
+  // When the enclosing function only returns a control value (no data results),
+  // return operations must take exactly one control-only input
+  if (results.size() == 1) {
+    if (getNumOperands() != 1 || !isa<NoneType>(getOperand(0).getType()))
+      return emitOpError("must take exactly one control-only input");
+    return success();
+  }
+
+  // When the function returns data, the operand number and types must
+  // match the function signature (minus the added control-only
+  // argument)
+  const auto &resultsNoCtrl = results.drop_back(1);
+  if (getNumOperands() != resultsNoCtrl.size())
     return emitOpError("has ")
            << getNumOperands() << " operands, but enclosing function returns "
-           << results.size();
+           << resultsNoCtrl.size();
 
-  for (unsigned i = 0, e = results.size(); i != e; ++i)
-    if (getOperand(i).getType() != results[i])
+  for (unsigned i = 0, e = resultsNoCtrl.size(); i != e; ++i)
+    if (getOperand(i).getType() != resultsNoCtrl[i])
       return emitError() << "type of return operand " << i << " ("
                          << getOperand(i).getType()
                          << ") doesn't match function result type ("
-                         << results[i] << ")";
+                         << resultsNoCtrl[i] << ")";
 
   return success();
 }
