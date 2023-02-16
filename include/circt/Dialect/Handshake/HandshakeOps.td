@@ -853,22 +853,51 @@ def MemoryControllerOp : Handshake_Op<"mem_controller", [
   DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
 ]> {
   let summary = "memory controller (dynamatic)";
-  let description = [{}];
+  let description = [{
+    Each MemoryControllerOp represents an interface to an externally defined 
+    unidimensional memory (i.e., it wraps a memref input to a handshake 
+    function). It receives control signals from each basic block containing
+    store operations referencing the wrapped memref; the formers are fed to the
+    operation through constants indicating the number of stores the basic block
+    will make to the referenced memory region. It also receives memory access
+    requests from load (addr) and store (addr+data) operations. It returns a
+    value (data) for each load request as well as a control signal to indicate
+    basic block completion to the enclosing function's end operation.
+
+    The operation also stores attrbutes to indicate the number of basic blocks
+    containing store operations referencing the wrapped memref (bbCount), the
+    total number of stores (stCount), the total number of loads (ldCount), and
+    a unique ID identifying the interface (id).
+
+    The order of operands is
+    1. Wrapped memref
+    2. Constants from basic blocks storing to the memory region (bb1, bb2, ...),
+      in program order
+    3. Load/Store access requests, in program order (i.e., in basic block order)
+
+    The order of results is
+    1. Load results, in program order (i.e., in load access requests order)
+    2. Control signal indicating completion
+
+    Example:
+    ```mlir
+    %ldData1, %ldData2, %ctrl = [bb = 2, ld = 2, st = 2] mem_controller (%mem : memref<16xi32>) (%bb1, %bb2, %stAddr1, %stData1, %ldAddr1, %ldAddr2, %stAddr2, %stData2) : (index, i32, index, index, index, i32) -> (i32, i32, none)
+    ```
+  }];
   let arguments = (ins AnyMemRef:$memref,
                        Variadic<AnyType>:$inputs,
                        I32Attr : $bbCount,
                        I32Attr : $ldCount,
                        I32Attr : $stCount,
-                       BoolAttr : $isExternal,
                        I32Attr : $id);
   let results = (outs Variadic<AnyType>:$outputs, NoneType:$done);
 
   let skipDefaultBuilders = 1;
   let builders = [OpBuilder<(
       ins "Value":$memref, "ValueRange":$inputs, "int":$bbCount, 
-      "int":$ldCount, "int":$stCount, "bool":$isExternal, "int":$id)>
+      "int":$ldCount, "int":$stCount, "int":$id)>
   ];
-  let assemblyFormat = "`[` `external` `=` $isExternal `]` `[` `bb` `=` $bbCount `,` `ld` `=` $ldCount `,` `st` `=`  $stCount `]` `(` $memref `:` qualified(type($memref)) `)` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)";
+  let assemblyFormat = " `[` `bb` `=` $bbCount `,` `ld` `=` $ldCount `,` `st` `=`  $stCount `]` `(` $memref `:` qualified(type($memref)) `)` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)";
 
   let extraClassDeclaration = [{
     mlir::MemRefType getMemRefType() {
@@ -882,7 +911,26 @@ def DynamaticLoadOp : Handshake_Op<"d_load", [
   DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
 ]> {
   let summary = "load operation (dynamatic)";
-  let description = [{}];
+  let description = [{
+    Represents a load memory port which sends load requests to a memory
+    interface. It receives address indices from dataflow predecessors and a data
+    value from the memory interface that eventually holds the loaded data. It
+    returns address indices that are sent to the memory interface as well as a
+    data value that is sent to its dataflow successor.
+    
+    The order of operands is
+    1. address indices (from predecessors)
+    2. data value (from memory interface)
+
+    The order of results is
+    1. data value (to successor)
+    2. address indices (to memory interface).
+
+    Example:
+    ```mlir
+    %dataToSucc, %addrToMem = d_load [%addr] %dataFromMem : index, i32
+    ```
+  }];
 
   let arguments = (ins Variadic<AnyType>:$addresses, AnyType:$data);
   let results = (outs AnyType:$dataResult, Variadic<AnyType>:$addressResults);
@@ -897,7 +945,25 @@ def DynamaticStoreOp : Handshake_Op<"d_store", [
   DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
 ]> {
   let summary = "store operation (dynamatic)";
-  let description = [{}];
+  let description = [{
+    Represents a store memory port which sends store requests to a memory
+    interface. It receives address indices and a data value to store in memory
+    from its dataflow predecessors. It returns the value to store and address
+    indices, all of which are sent to the memory interface.
+    
+    The order of operands is
+    1. address indices (from predecessors)
+    2. data value (from predecessor)
+
+    The order of results is
+    1. data value (to memory interface)
+    2. address indices (to memory interface).
+
+    Example:
+    ```mlir
+    %dataToMem, %addrToMem = d_store [%addr] %dataToStore : index, i32
+    ```
+  }];
 
   let arguments = (ins Variadic<AnyType>:$addresses, AnyType:$data);
   let results = (outs AnyType:$dataResult, Variadic<AnyType>:$addressResults);
@@ -911,7 +977,18 @@ def DynamaticStoreOp : Handshake_Op<"d_store", [
 
 def DynamaticReturnOp : Handshake_Op<"d_return", []> {
   let summary = "handshake-level return (dynamatic)";
-  let description = [{}];
+  let description = [{
+    This return operation represents the handshake equivalent of a 
+    func::ReturnOp (i.e., the latter is converted to the former one-to-one,
+    preserving operands). This operation also outputs a list of values that
+    correspond one-to-one to its own operands (i.e., same type and semantic
+    value).
+
+    Example:
+    ```mlir
+    %out1, %out2 = d_return %in1, %in2 : (i32, i64) -> (i32, i64)
+    ```
+  }];
 
   let arguments = (ins Variadic<AnyType> : $inputs);
   let results = (outs Variadic<AnyType> : $outputs);
@@ -924,7 +1001,17 @@ def DynamaticReturnOp : Handshake_Op<"d_return", []> {
 
 def EndOp : Handshake_Op<"end", [Terminator]> {
   let summary = "function endpoint (dynamatic)";
-  let description = [{}];
+  let description = [{
+    This operation is the terminator of every handshake function in Dynamatic.
+    Its operands are the merged results of all return operations in the function
+    (or simply the forwarded results of a single return) followed by the output
+    control signals of all memory interfaces in the function.
+
+    Example:
+    ```mlir
+    end %res1, %res2, %ctrl1, %ctrl2 : i32, i64, none, none
+    ```
+  }];
 
   let arguments = (ins Variadic<AnyType> : $inputs);
 
