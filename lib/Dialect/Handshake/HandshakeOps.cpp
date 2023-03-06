@@ -1585,6 +1585,76 @@ LogicalResult MemoryControllerOp::verify() {
   return success();
 }
 
+unsigned MemoryControllerOp::getAccessTypeCount(AccessTypeEnum accType) {
+  unsigned count = 0;
+  ArrayAttr accesses = getAccesses();
+  for (auto &blockAccesses : accesses)
+    for (auto &access : cast<ArrayAttr>(blockAccesses))
+      if (cast<AccessTypeEnumAttr>(access).getValue() == accType)
+        count++;
+  return count;
+}
+
+bool MemoryControllerOp::bbHasControl(size_t idx) {
+  auto blockAccesses = cast<ArrayAttr>(getAccesses()[idx]);
+  auto isStoreOp = [](Attribute memOp) {
+    return cast<AccessTypeEnumAttr>(memOp).getValue() == AccessTypeEnum::Store;
+  };
+  return llvm::any_of(blockAccesses, isStoreOp);
+}
+
+size_t MemoryControllerOp::getBBInputCount(ArrayAttr &blockAccesses) {
+  size_t ldCount = 0, stCount = 0;
+  for (auto &access : blockAccesses) {
+    auto accessType = cast<handshake::AccessTypeEnumAttr>(access).getValue();
+    if (accessType == AccessTypeEnum::Load)
+      ldCount++;
+    else
+      stCount++;
+  }
+  return stCount * 2 + ldCount + ((stCount == 0) ? 0 : 1);
+}
+
+SmallVector<Value> MemoryControllerOp::getInputsOfBB(size_t idx) {
+  auto accesses = getAccesses();
+
+  // Count the total number of operands in previous blocks
+  size_t startIdx = 0;
+  for (size_t i = 0; i < idx; i++) {
+    auto blockAccesses = cast<ArrayAttr>(accesses[i]);
+    startIdx += getBBInputCount(blockAccesses);
+  }
+
+  // Accumulate all block operands
+  auto blockAccesses = cast<ArrayAttr>(accesses[idx]);
+  size_t endIdx = startIdx + getBBInputCount(blockAccesses);
+  SmallVector<Value> bbOperands;
+  auto inputs = getInputs();
+  for (auto i = startIdx; i < endIdx; i++)
+    bbOperands.push_back(inputs[i]);
+  return bbOperands;
+}
+
+SmallVector<SmallVector<Value>> MemoryControllerOp::groupInputsByBB() {
+  SmallVector<SmallVector<Value>> groups;
+  auto inputs = getInputs();
+  size_t startIdx = 0;
+
+  for (auto &accesses : getAccesses()) {
+    auto blockAccesses = cast<ArrayAttr>(accesses);
+    auto endIdx = startIdx + getBBInputCount(blockAccesses);
+
+    // Extract basic block operands
+    SmallVector<Value> bbOperands;
+    for (auto j = startIdx; j < endIdx; j++)
+      bbOperands.push_back(inputs[j]);
+    groups.push_back(bbOperands);
+
+    startIdx = endIdx;
+  }
+  return groups;
+}
+
 std::string MemoryControllerOp::getOperandName(unsigned int idx) {
   if (idx == 0)
     return "extmem";
@@ -1653,9 +1723,8 @@ LogicalResult DynamaticStoreOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, mlir::RegionRange regions,
     SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
-  auto opTypes = operands.getTypes();
-  inferredReturnTypes.insert(inferredReturnTypes.end(), opTypes.begin(),
-                             opTypes.end());
+  auto types = operands.getTypes();
+  inferredReturnTypes.append(types.begin(), types.end());
   return success();
 }
 
@@ -1701,6 +1770,40 @@ LogicalResult DynamaticReturnOp::verify() {
                          << resultsNoCtrl[i] << ")";
 
   return success();
+}
+
+// EndOp
+
+LogicalResult EndOp::verify() { return success(); }
+
+ValueRange EndOp::getReturnValues() {
+  auto funcOp = getOperation()->getParentOfType<handshake::FuncOp>();
+  assert(funcOp && "EndOp must be child of handshake function");
+
+  auto numResults = funcOp.getFunctionType().getResults().size();
+
+  // When the function returns more than one value (including the control
+  // signal), the end operation will not receive a value for the control signal
+  // (it will be inferred from the other returned values). Therefore, the
+  // operation will take one less argument than the function has return values
+  if (numResults > 1)
+    numResults--;
+  return getOperands().take_front(numResults);
+}
+
+ValueRange EndOp::getMemoryControls() {
+  auto funcOp = getOperation()->getParentOfType<handshake::FuncOp>();
+  assert(funcOp && "EndOp must be child of handshake function");
+
+  auto numResults = funcOp.getFunctionType().getResults().size();
+
+  // When the function returns more than one value (including the control
+  // signal), the end operation will not receive a value for the control signal
+  // (it will be inferred from the other returned values). Therefore, the
+  // operation will take one less argument than the function has return values
+  if (numResults > 1)
+    numResults--;
+  return getOperands().drop_front(numResults);
 }
 
 #define GET_OP_CLASSES
