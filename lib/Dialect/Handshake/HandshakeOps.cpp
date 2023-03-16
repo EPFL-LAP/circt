@@ -1743,30 +1743,18 @@ LogicalResult DynamaticReturnOp::verify() {
   if (!funcOp)
     return emitOpError("must have a handshake.func parent");
 
+  // Operand number and types should match enclosing function's return types
   const auto &results = funcOp.getResultTypes();
-  // When the enclosing function only returns a control value (no data results),
-  // return operations must take exactly one control-only input
-  if (results.size() == 1) {
-    if (getNumOperands() != 1 || !isa<NoneType>(getOperand(0).getType()))
-      return emitOpError("must take exactly one control-only input");
-    return success();
-  }
-
-  // When the function returns data, the operand number and types must
-  // match the function signature (minus the added control-only
-  // argument)
-  const auto &resultsNoCtrl = results.drop_back(1);
-  if (getNumOperands() != resultsNoCtrl.size())
+  if (getNumOperands() != results.size())
     return emitOpError("has ")
            << getNumOperands() << " operands, but enclosing function returns "
-           << resultsNoCtrl.size();
-
-  for (unsigned i = 0, e = resultsNoCtrl.size(); i != e; ++i)
-    if (getOperand(i).getType() != resultsNoCtrl[i])
+           << results.size();
+  for (unsigned i = 0, e = results.size(); i != e; ++i)
+    if (getOperand(i).getType() != results[i])
       return emitError() << "type of return operand " << i << " ("
                          << getOperand(i).getType()
                          << ") doesn't match function result type ("
-                         << resultsNoCtrl[i] << ")";
+                         << results[i] << ")";
 
   return success();
 }
