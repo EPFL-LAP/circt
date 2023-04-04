@@ -1661,7 +1661,7 @@ std::string MemoryControllerOp::getOperandName(unsigned int idx) {
 
   // Iterate through all memory accesses to find out the type of the operand
   unsigned ldIdx = 0, stIdx = 0;
-  for (auto &[blockIdx, accesses] : llvm::enumerate(getAccesses())) {
+  for (auto [blockIdx, accesses] : llvm::enumerate(getAccesses())) {
     if (bbHasControl(blockIdx) && --idx == 0)
       return "ctrl" + std::to_string(blockIdx);
     for (auto access : cast<ArrayAttr>(accesses)) {
