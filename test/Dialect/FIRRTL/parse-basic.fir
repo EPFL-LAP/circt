@@ -925,7 +925,8 @@ circuit MyModule :     ; CHECK: firrtl.circuit "MyModule" {
     output out: Reset
     out <= UInt(1)
     ; CHECK: %[[c1:.*]] = firrtl.constant 1 : !firrtl.uint
-    ; CHECK-NEXT: firrtl.connect %out, %[[c1]] : !firrtl.reset, !firrtl.uint
+    ; CHECK-NEXT: %[[c2:.*]] = firrtl.resetCast %[[c1]]
+    ; CHECK-NEXT: firrtl.strictconnect %out, %[[c2]] : !firrtl.reset
 
 
   ; CHECK-LABEL: @resetBundle
@@ -935,10 +936,12 @@ circuit MyModule :     ; CHECK: firrtl.circuit "MyModule" {
 
     b <= a
     ; CHECK: %1 = firrtl.subfield %a[a] : !firrtl.bundle<a: uint<1>, b: asyncreset>
-    ; CHECK: firrtl.connect %0, %1 : !firrtl.reset, !firrtl.uint<1>
-    ; CHECK: %2 = firrtl.subfield %b[b] : !firrtl.bundle<a: reset, b: reset>
-    ; CHECK: %3 = firrtl.subfield %a[b] : !firrtl.bundle<a: uint<1>, b: asyncreset>
-    ; CHECK: firrtl.connect %2, %3 : !firrtl.reset, !firrtl.asyncreset
+    ; CHECK: %[[r1:.*]] = firrtl.resetCast %1
+    ; CHECK: firrtl.strictconnect %0, %[[r1]] : !firrtl.reset
+    ; CHECK: %3 = firrtl.subfield %b[b] : !firrtl.bundle<a: reset, b: reset>
+    ; CHECK: %4 = firrtl.subfield %a[b] : !firrtl.bundle<a: uint<1>, b: asyncreset>
+    ; CHECK: %[[r4:.*]] = firrtl.resetCast %4
+    ; CHECK: firrtl.strictconnect %3, %[[r4]] : !firrtl.reset
 
   ; CHECK-LABEL: @WhenEncodedVerification
   module WhenEncodedVerification:
@@ -1154,26 +1157,27 @@ circuit MyModule :     ; CHECK: firrtl.circuit "MyModule" {
 
   ; CHECK-LABEL: module private @RefsChild(
   ; CHECK-SAME: out %r: !firrtl.probe<uint<1>>
-  ; CHECK-SAME: out %rw: !firrtl.probe<uint<1>>
+  ; CHECK-SAME: out %rw: !firrtl.rwprobe<uint<1>>
   module RefsChild :
     input in : UInt<1>
     output r : Probe<UInt<1>>
-    output rw : RWProbe<UInt<1>> ; expected-warning {{RWProbe not yet supported}}
+    output rw : RWProbe<UInt<1>>
 
-    ; CHECK-NEXT: %[[NODE:.+]] = firrtl.node
+    ; CHECK-NEXT: %[[NODE:.+]], %[[NODE_RWREF:.+]] = firrtl.node
+    ; CHECK-SAME: forceable
     node n = in
     ; CHECK-NEXT: %[[REF:.+]] = firrtl.ref.send %[[NODE]]
     ; CHECK-NEXT: ref.define %r, %[[REF]]
     define r = probe(n)
-    ; CHECK-NEXT: %[[RWREF:.+]] = firrtl.ref.send %[[NODE]]
-    ; CHECK-NEXT: ref.define %rw, %[[RWREF]]
+    ; CHECK-NOT: ref.send
+    ; CHECK-NEXT: ref.define %rw, %[[NODE_RWREF]]
     define rw = rwprobe(n)
 
   ; CHECK-LABEL: module private @Refs(
   module Refs :
     input in : UInt<1>
     output r : Probe<UInt<1>>
-    output rw : RWProbe<UInt<1>> ; expected-warning {{RWProbe not yet supported}}
+    output rw : RWProbe<UInt<1>>
     output out : UInt<1>
     output out2 : UInt<1>
     output out3 : UInt<3>
@@ -1187,6 +1191,7 @@ circuit MyModule :     ; CHECK: firrtl.circuit "MyModule" {
     ; CHECK-NEXT: ref.define %r, %[[OUTREF]]
     define r = probe(out)
     ; CHECK-NEXT: ref.define %rw, %[[RC_RW]]
+    ; CHECK-SAME: rwprobe
     define rw = rc.rw
 
     ; CHECK-NEXT: %[[READ_RC_R:.+]] = firrtl.ref.resolve %[[RC_R]]
@@ -1218,7 +1223,7 @@ circuit MyModule :     ; CHECK: firrtl.circuit "MyModule" {
     ; CHECK-NEXT: ref.define %agg_out, %[[AGG3_PROBE]]
     define agg_out = probe(agg3)
 
-    ; CHECK: %{{.+}}, %[[REM_R:.+]], %{{.+}}, %[[REM_R2:.+]] = firrtl.instance rem
+    ; CHECK: %{{.+}}, %[[REM_R:.+]], %{{.+}}, %[[REM_R2:.+]], %[[REM_UNUSED_REF:.+]] = firrtl.instance rem
     ; CHECK-NEXT: %[[REM_R2_1:.+]] = firrtl.ref.sub %[[REM_R2]][1]
     ; CHECK-NEXT: %[[REM_R2_1_A:.+]] = firrtl.ref.sub %[[REM_R2_1]][0]
     ; CHECK-NEXT: %[[READ_REM_R2_1_A:.+]] = firrtl.ref.resolve %[[REM_R2_1_A]]
@@ -1230,6 +1235,31 @@ circuit MyModule :     ; CHECK: firrtl.circuit "MyModule" {
     ; CHECK-DAG: %[[READ_PROBE_IN:.+]] = firrtl.ref.resolve %[[PROBE_IN]]
     ; CHECK-DAG: %[[SUM:.+]] = firrtl.and %[[READ_PROBE_IN]],
     out <= and(read(probe(in)), UInt(1))
+
+  ; CHECK-LABEL: module private @ForceRelease(
+  module ForceRelease :
+    input in : UInt<1>
+    input clock : Clock
+    input cond : UInt<1>
+
+    ; CHECK-NEXT: %{{.+}}, %{{.+}}, %[[RC_RW:.+]] = firrtl.instance rc
+    inst rc of RefsChild
+    rc.in <= in
+
+    ; CHECK: firrtl.ref.force_initial %[[TRUE:.+]], %[[RC_RW]], %{{.+}} : !firrtl.uint<1>, !firrtl.uint<1>
+    force_initial(rc.rw, UInt<1>(0))
+
+    ; CHECK: firrtl.ref.force %clock, %cond, %[[RC_RW]], %{{.+}} : !firrtl.clock, !firrtl.uint<1>, !firrtl.uint<1>
+    force(clock, cond, rc.rw, UInt<1>(1))
+    ; CHECK: %[[NOT_COND:.+]] = firrtl.not %cond
+    ; CHECK: firrtl.ref.release %clock, %[[NOT_COND]], %[[RC_RW]] : !firrtl.clock, !firrtl.uint<1>, !firrtl.rwprobe<uint<1>>
+    release(clock, not(cond), rc.rw)
+
+    ; CHECK-NEXT: %{{.+}}, %{{.+}}, %[[RC2_RW:.+]] = firrtl.instance rc2
+    inst rc2 of RefsChild
+    rc2.in <= in
+    ; CHECK: firrtl.ref.release_initial %[[TRUE]], %[[RC2_RW]] : !firrtl.uint<1>, !firrtl.rwprobe<uint<1>>
+    release_initial(rc2.rw)
 
   ; CHECK-LABEL: extmodule private @RefExt(
   ; CHECK-SAME:  in in: !firrtl.uint<1>, out r: !firrtl.probe<uint<1>> 
@@ -1250,9 +1280,9 @@ circuit MyModule :     ; CHECK: firrtl.circuit "MyModule" {
     output r : Probe<UInt<1>>
     output data : UInt<3>
     output r2 : Probe<{a : UInt<3>}[3]>
+    output no_ref_for_this : Probe<UInt<1>>
     ref r2 is "in"
     ref r is "path.to.internal.signal"
-
 
   ; CHECK-LABEL: module private @ProbeInvalidate
   ; CHECK-NEXT: }

@@ -562,7 +562,7 @@ private:
   /// the target, and does not trigger inlining on the target itself.
   void inlineInto(StringRef prefix, OpBuilder &b, IRMapping &mapper,
                   BackedgeBuilder &beb, SmallVectorImpl<Backedge> &edges,
-                  FModuleOp target,
+                  FModuleOp target, FModuleOp inlineToParent,
                   DenseMap<Attribute, Attribute> &symbolRenames,
                   ModuleNamespace &moduleNamespace);
 
@@ -684,6 +684,12 @@ bool Inliner::renameInstance(
     StringRef prefix, InstanceOp oldInst, InstanceOp newInst,
     ModuleNamespace &moduleNamespace,
     const DenseMap<Attribute, Attribute> &symbolRenames) {
+  // Add this instance to the activeHierpaths. This ensures that NLAs that this
+  // instance participates in will be updated correctly.
+  auto parentActivePaths = activeHierpaths;
+  if (auto instSym = getInnerSymName(oldInst))
+    setActiveHierPaths(oldInst->getParentOfType<FModuleOp>().getNameAttr(),
+                       instSym);
   // List of HierPathOps that are valid based on the InstanceOp being inlined
   // and the InstanceOp which is being replaced after inlining. That is the set
   // of HierPathOps that is common between these two.
@@ -750,6 +756,7 @@ bool Inliner::renameInstance(
         nlaList[en.index()] = newSym.cast<StringAttr>();
     }
   }
+  activeHierpaths = std::move(parentActivePaths);
   return symbolChanged;
 }
 
@@ -801,10 +808,13 @@ void Inliner::mapPortsToWires(StringRef prefix, OpBuilder &b, IRMapping &mapper,
     Value wire =
         TypeSwitch<FIRRTLType, Value>(type)
             .Case<FIRRTLBaseType>([&](auto base) {
-              return b.create<WireOp>(
-                  target.getLoc(), base, (prefix + portInfo[i].getName()).str(),
-                  NameKindEnum::DroppableName,
-                  ArrayAttr::get(context, newAnnotations), newSym);
+              return b
+                  .create<WireOp>(target.getLoc(), base,
+                                  (prefix + portInfo[i].getName()).str(),
+                                  NameKindEnum::DroppableName,
+                                  ArrayAttr::get(context, newAnnotations),
+                                  newSym)
+                  .getResult();
             })
             .Case<RefType>([&](auto refty) {
               // Symbols and annotations are not allowed, warn if dropping.
@@ -1017,7 +1027,7 @@ void Inliner::flattenInstances(FModuleOp module) {
 // NOLINTNEXTLINE(misc-no-recursion)
 void Inliner::inlineInto(StringRef prefix, OpBuilder &b, IRMapping &mapper,
                          BackedgeBuilder &beb, SmallVectorImpl<Backedge> &edges,
-                         FModuleOp target,
+                         FModuleOp target, FModuleOp inlineToParent,
                          DenseMap<Attribute, Attribute> &symbolRenames,
                          ModuleNamespace &moduleNamespace) {
   auto moduleName = target.getNameAttr();
@@ -1074,7 +1084,9 @@ void Inliner::inlineInto(StringRef prefix, OpBuilder &b, IRMapping &mapper,
     if (!rootMap[childModule.getNameAttr()].empty()) {
       for (auto sym : rootMap[childModule.getNameAttr()]) {
         auto &mnla = nlaMap[sym];
-        sym = mnla.reTop(target);
+        // Retop to the new parent, which is the topmost module (and not
+        // immediate parent) in case of recursive inlining.
+        sym = mnla.reTop(inlineToParent);
         StringAttr instSym = getInnerSymName(instance);
         if (!instSym) {
           instSym = StringAttr::get(
@@ -1107,7 +1119,7 @@ void Inliner::inlineInto(StringRef prefix, OpBuilder &b, IRMapping &mapper,
                   moduleNamespace);
     } else {
       inlineInto(nestedPrefix, b, mapper, beb, edges, childModule,
-                 symbolRenames, moduleNamespace);
+                 inlineToParent, symbolRenames, moduleNamespace);
     }
     currentPath.pop_back();
     activeHierpaths = parentActivePaths;
@@ -1203,8 +1215,10 @@ void Inliner::inlineInstances(FModuleOp parent) {
       flattenInto(nestedPrefix, b, mapper, beb, edges, target, {},
                   moduleNamespace);
     } else {
-      inlineInto(nestedPrefix, b, mapper, beb, edges, target, symbolRenames,
-                 moduleNamespace);
+      // Recursively inline all the child modules under `parent`, that are
+      // marked to be inlined.
+      inlineInto(nestedPrefix, b, mapper, beb, edges, target, parent,
+                 symbolRenames, moduleNamespace);
     }
     currentPath.pop_back();
     activeHierpaths = parentActivePaths;

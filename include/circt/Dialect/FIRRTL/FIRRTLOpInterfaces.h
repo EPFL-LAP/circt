@@ -25,10 +25,15 @@
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/TypeSwitch.h"
 
+namespace mlir {
+class PatternRewriter;
+} // end namespace mlir
+
 namespace circt {
 namespace firrtl {
 
 class FIRRTLType;
+class Forceable;
 
 /// This holds the name and type that describes the module's ports.
 struct PortInfo {
@@ -106,6 +111,18 @@ enum class ConnectBehaviorKind {
 
 /// Verification hook for verifying module like operations.
 LogicalResult verifyModuleLikeOpInterface(FModuleLike module);
+
+namespace detail {
+/// Return null or forceable reference result type.
+RefType getForceableResultType(bool forceable, Type type);
+/// Verify a Forceable op.
+LogicalResult verifyForceableOp(Forceable op);
+/// Replace a Forceable op with equivalent, changing whether forceable.
+/// No-op if already has specified forceability.
+Forceable
+replaceWithNewForceability(Forceable op, bool forceable,
+                           ::mlir::PatternRewriter *rewriter = nullptr);
+} // end namespace detail
 
 } // namespace firrtl
 } // namespace circt

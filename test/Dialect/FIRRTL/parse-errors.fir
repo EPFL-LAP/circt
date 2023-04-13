@@ -447,12 +447,6 @@ circuit RefDupe:
 
 ;// -----
 
-circuit MissingRef:
-  extmodule MissingRef:
-    output p : Probe<UInt<2>> ; expected-error {{no ref statement found for ref port "p"}}
-
-;// -----
-
 circuit UnusedRef:
   extmodule UnusedRef:
     ref p is "x.y" ; expected-error {{unused ref statement}}
@@ -539,4 +533,20 @@ circuit DefineWidths:
     input in : UInt<1>
     output p : Probe<UInt>
     define p = probe(in) ; expected-error {{'firrtl.ref.define' op requires all operands to have the same type}}
+
+
+;// -----
+
+circuit ForceProbe:
+  module ForceProbe:
+    input in : UInt<1>
+    force_initial(probe(in), UInt<1>(1)) ; expected-error {{expected rwprobe-type expression for force_initial destination, got '!firrtl.probe<uint<1>>'}}
+
+;// -----
+
+circuit ForceWithLiteral:
+  module ForceWithLiteral:
+    input in : UInt<1>
+    node n = in
+    force_initial(rwprobe(n), 1) ; expected-error {{expected source expression in force_initial}}
 

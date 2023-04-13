@@ -397,11 +397,8 @@ static LogicalResult applyLoadMemoryAnno(const AnnoPathValue &target,
     return failure();
   }
 
-  op->setAttr("init",
-              MemoryInitAttr::get(
-                  op->getContext(), filename,
-                  BoolAttr::get(op->getContext(), hexOrBinaryValue == "b"),
-                  BoolAttr::get(op->getContext(), isInline)));
+  op->setAttr("init", MemoryInitAttr::get(op->getContext(), filename,
+                                          hexOrBinaryValue == "b", isInline));
 
   return success();
 }
@@ -728,7 +725,7 @@ LogicalResult LowerAnnotationsPass::solveWiringProblems(ApplyState &state) {
     // If the sink is a wire with no users, then convert this to a node.
     auto destOp = dyn_cast_or_null<WireOp>(dest.getDefiningOp());
     if (destOp && dest.getUses().empty()) {
-      builder.create<NodeOp>(src.getType(), src, destOp.getName())
+      builder.create<NodeOp>(src, destOp.getName())
           .setAnnotationsAttr(destOp.getAnnotations());
       opsToErase.push_back(destOp);
       return success();
@@ -837,15 +834,15 @@ LogicalResult LowerAnnotationsPass::solveWiringProblems(ApplyState &state) {
     }
 
     LLVM_DEBUG({
-      llvm::dbgs() << "    LCA: " << lca.moduleName() << "\n"
+      llvm::dbgs() << "    LCA: " << lca.getModuleName() << "\n"
                    << "    sourcePaths:\n";
       for (auto inst : sourcePaths[0])
-        llvm::dbgs() << "      - " << inst.instanceName() << " of "
-                     << inst.referencedModuleName() << "\n";
+        llvm::dbgs() << "      - " << inst.getInstanceName() << " of "
+                     << inst.getReferencedModuleName() << "\n";
       llvm::dbgs() << "    sinkPaths:\n";
       for (auto inst : sinkPaths[0])
-        llvm::dbgs() << "      - " << inst.instanceName() << " of "
-                     << inst.referencedModuleName() << "\n";
+        llvm::dbgs() << "      - " << inst.getInstanceName() << " of "
+                     << inst.getReferencedModuleName() << "\n";
     });
 
     // Pre-populate the connectionMap of the module with the source and sink.
@@ -923,7 +920,7 @@ LogicalResult LowerAnnotationsPass::solveWiringProblems(ApplyState &state) {
         }
         moduleModifications[mod].portsToAdd.push_back(
             {index, {StringAttr::get(context, name), tpe, dir}});
-        instName = inst.instanceName();
+        instName = inst.getInstanceName();
       }
     };
 
@@ -943,7 +940,7 @@ LogicalResult LowerAnnotationsPass::solveWiringProblems(ApplyState &state) {
 
     auto modifications = moduleModifications[fmodule];
     LLVM_DEBUG({
-      llvm::dbgs() << "  - module: " << fmodule.moduleName() << "\n";
+      llvm::dbgs() << "  - module: " << fmodule.getModuleName() << "\n";
       llvm::dbgs() << "    ports:\n";
       for (auto [index, port] : modifications.portsToAdd) {
         llvm::dbgs() << "      - name: " << port.getName() << "\n"

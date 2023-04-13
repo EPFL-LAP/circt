@@ -31,8 +31,8 @@ public:
         // Basic Expressions
         .template Case<
             ConstantOp, SpecialConstantOp, AggregateConstantOp, InvalidValueOp,
-            SubfieldOp, SubindexOp, SubaccessOp, BundleCreateOp, VectorCreateOp,
-            MultibitMuxOp,
+            SubfieldOp, SubindexOp, SubaccessOp, SubtagOp, BundleCreateOp,
+            VectorCreateOp, MultibitMuxOp, TagExtractOp,
             // Arithmetic and Logical Binary Primitives.
             AddPrimOp, SubPrimOp, MulPrimOp, DivPrimOp, RemPrimOp, AndPrimOp,
             OrPrimOp, XorPrimOp,
@@ -97,6 +97,8 @@ public:
   HANDLE(SubfieldOp, Unhandled);
   HANDLE(SubindexOp, Unhandled);
   HANDLE(SubaccessOp, Unhandled);
+  HANDLE(SubtagOp, Unhandled);
+  HANDLE(TagExtractOp, Unhandled);
   HANDLE(MultibitMuxOp, Unhandled);
 
   // Arithmetic and Logical Binary Primitives.
@@ -172,7 +174,8 @@ public:
     return TypeSwitch<Operation *, ResultType>(op)
         .template Case<AttachOp, ConnectOp, StrictConnectOp, RefDefineOp,
                        ForceOp, PrintFOp, SkipOp, StopOp, WhenOp, AssertOp,
-                       AssumeOp, CoverOp, ProbeOp>(
+                       AssumeOp, CoverOp, ProbeOp, RefForceOp,
+                       RefForceInitialOp, RefReleaseOp, RefReleaseInitialOp>(
             [&](auto opNode) -> ResultType {
               return thisCast->visitStmt(opNode, args...);
             })
@@ -211,6 +214,10 @@ public:
   HANDLE(AssumeOp);
   HANDLE(CoverOp);
   HANDLE(ProbeOp);
+  HANDLE(RefForceOp);
+  HANDLE(RefForceInitialOp);
+  HANDLE(RefReleaseOp);
+  HANDLE(RefReleaseInitialOp);
 
 #undef HANDLE
 };

@@ -65,10 +65,14 @@ def BundleType : FIRRTLDialectType<CPred<"$_self.isa<BundleType>()">,
 def FVectorType : FIRRTLDialectType<CPred<"$_self.isa<FVectorType>()">,
   "FVectorType", "::circt::firrtl::FVectorType">;
 
+def FEnumType : FIRRTLDialectType<CPred<"$_self.isa<FEnumType>()">,
+ "FEnumType", "::circt::firrtl::FEnumType">;
+
 def AggregateType : FIRRTLDialectType<
   Or<[
     CPred<"$_self.isa<FVectorType>()">,
-    CPred<"$_self.isa<BundleType>()">
+    CPred<"$_self.isa<BundleType>()">,
+    CPred<"$_self.isa<FEnumType>()">
   ]>,
   "a aggregate type", "::circt::firrtl::FIRRTLBaseType">;
 
@@ -112,6 +116,10 @@ def RefType : FIRRTLDialectType<
   CPred<"$_self.isa<RefType>()">,
    "reference type", "::circt::firrtl::RefType">;
 
+def RWProbe : FIRRTLDialectType<
+  CPred<"$_self.isa<RefType>() && $_self.cast<RefType>().getForceable()">,
+   "rwprobe type", "::circt::firrtl::RefType">;
+
 //===----------------------------------------------------------------------===//
 // FIRRTL Types Predicates
 //===----------------------------------------------------------------------===//
@@ -140,5 +148,19 @@ def OneBitCastableType : AnyTypeOf<
   [OneBitType, AnyResetType, AsyncResetType, ClockType],
   "1-bit uint/sint/analog, reset, asyncreset, or clock",
                                   "::circt::firrtl::FIRRTLBaseType">;
+
+//===----------------------------------------------------------------------===//
+// Constraints on RefOps
+//===----------------------------------------------------------------------===//
+
+class RefTypeConstraint<string ref, string base>
+  : TypesMatchWith<"reference base type should match",
+                   ref, base,
+                   "$_self.cast<RefType>().getType()">;
+
+class RefResultTypeConstraint<string base, string ref>
+  : TypesMatchWith<"reference base type should match",
+                   base, ref,
+                   "RefType::get($_self.cast<FIRRTLBaseType>().getPassiveType())">;
 
 #endif // CIRCT_DIALECT_FIRRTL_FIRRTLTYPES_TD

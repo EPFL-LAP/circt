@@ -11,6 +11,7 @@
 #include "circt/Dialect/FIRRTL/Passes.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/Threading.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/TinyPtrVector.h"
@@ -20,6 +21,13 @@
 
 using namespace circt;
 using namespace firrtl;
+
+// Return true if this op has side-effects except for alloc and read.
+static bool hasUnknownSideEffect(Operation *op) {
+  return !(mlir::isMemoryEffectFree(op) ||
+           mlir::hasSingleEffect<mlir::MemoryEffects::Allocate>(op) ||
+           mlir::hasSingleEffect<mlir::MemoryEffects::Read>(op));
+}
 
 /// Return true if this is a wire or a register or a node.
 static bool isDeclaration(Operation *op) {
@@ -202,7 +210,7 @@ void IMDeadCodeElimPass::markBlockExecutable(Block *block) {
     else if (isa<FConnectLike>(op))
       // Skip connect op.
       continue;
-    else if (!mlir::isMemoryEffectFree(&op))
+    else if (hasUnknownSideEffect(&op))
       markUnknownSideEffectOp(&op);
 
     // TODO: Handle attach etc.
@@ -389,8 +397,9 @@ void IMDeadCodeElimPass::rewriteModuleBody(FModuleOp module) {
       continue;
     }
 
-    // Delete dead wires, regs and nodes.
-    if (isDeclaration(&op) && isAssumedDead(&op)) {
+    // Delete dead wires, regs, nodes and alloc/read ops.
+    if ((isDeclaration(&op) || !hasUnknownSideEffect(&op)) &&
+        isAssumedDead(&op)) {
       LLVM_DEBUG(llvm::dbgs() << "DEAD: " << op << "\n";);
       assert(op.use_empty() && "users should be already removed");
       op.erase();
@@ -413,7 +422,7 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
     return;
 
   InstanceGraphNode *instanceGraphNode =
-      instanceGraph->lookup(module.moduleNameAttr());
+      instanceGraph->lookup(module.getModuleNameAttr());
   LLVM_DEBUG(llvm::dbgs() << "Prune ports of module: " << module.getName()
                           << "\n");
 
@@ -517,7 +526,7 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
 
       // Ok, this port is used only within its defined module. So we can replace
       // the port with a wire.
-      WireOp wire = builder.create<WireOp>(argument.getType());
+      auto wire = builder.create<WireOp>(argument.getType()).getResult();
 
       // Since `liveSet` contains the port, we have to erase it from the set.
       liveValues.erase(argument);
@@ -622,7 +631,7 @@ void IMDeadCodeElimPass::eraseEmptyModule(FModuleOp module) {
   LLVM_DEBUG(llvm::dbgs() << "Erase " << module.getName() << "\n");
 
   InstanceGraphNode *instanceGraphNode =
-      instanceGraph->lookup(module.moduleNameAttr());
+      instanceGraph->lookup(module.getModuleNameAttr());
 
   SmallVector<Location> instancesWithSymbols;
   for (auto *use : llvm::make_early_inc_range(instanceGraphNode->uses())) {

@@ -701,9 +701,7 @@ ParseResult FIRParser::parseType(FIRRTLType &result, const Twine &message) {
         parseToken(FIRToken::greater, "expected '>' in reference type"))
       return failure();
 
-    if (kind == FIRToken::kw_RWProbe)
-      emitWarning(translateLocation(loc),
-                  "RWProbe not yet supported, converting to Probe");
+    bool forceable = kind == FIRToken::kw_RWProbe;
 
     auto innerType = dyn_cast<FIRRTLBaseType>(type);
     if (!innerType) // TODO: "innerType.containsReference()"
@@ -712,7 +710,7 @@ ParseResult FIRParser::parseType(FIRRTLType &result, const Twine &message) {
     if (!innerType.isPassive())
       return emitError(loc, "probe inner type must be passive");
 
-    result = RefType::get(innerType);
+    result = RefType::get(innerType, forceable);
     break;
   }
 
@@ -825,6 +823,34 @@ struct FIRModuleContext : public FIRParser {
   // in the parser, do an implicit CSE to reduce parse time and silliness in the
   // resulting IR.
   llvm::DenseMap<std::pair<Attribute, Type>, Value> constantCache;
+
+  /// Get a cached constant.
+  Value getCachedConstantInt(ImplicitLocOpBuilder &builder, Attribute attr,
+                             IntType type, APInt &value) {
+    auto &result = constantCache[{attr, type}];
+    if (result)
+      return result;
+
+    // Make sure to insert constants at the top level of the module to maintain
+    // dominance.
+    OpBuilder::InsertPoint savedIP;
+
+    auto *parentOp = builder.getInsertionBlock()->getParentOp();
+    if (!isa<FModuleOp>(parentOp)) {
+      savedIP = builder.saveInsertionPoint();
+      while (!isa<FModuleOp>(parentOp)) {
+        builder.setInsertionPoint(parentOp);
+        parentOp = builder.getInsertionBlock()->getParentOp();
+      }
+    }
+
+    result = builder.create<ConstantOp>(type, value);
+
+    if (savedIP.isSet())
+      builder.setInsertionPoint(savedIP.getBlock(), savedIP.getPoint());
+
+    return result;
+  }
 
   //===--------------------------------------------------------------------===//
   // SubaccessCache
@@ -1199,6 +1225,10 @@ private:
   ParseResult parseCover();
   ParseResult parseWhen(unsigned whenIndent);
   ParseResult parseRefDefine();
+  ParseResult parseRefForce();
+  ParseResult parseRefForceInitial();
+  ParseResult parseRefRelease();
+  ParseResult parseRefReleaseInitial();
   ParseResult parseRefRead(Value &result);
   ParseResult parseProbe(Value &result);
   ParseResult parseRWProbe(Value &result);
@@ -1785,26 +1815,8 @@ ParseResult FIRStmtParser::parseIntegerLiteralExp(Value &result) {
     return success();
   }
 
-  // Make sure to insert constants at the top level of the module to maintain
-  // dominance.
-  OpBuilder::InsertPoint savedIP;
-
-  auto *parentOp = builder.getInsertionBlock()->getParentOp();
-  if (!isa<FModuleOp>(parentOp)) {
-    savedIP = builder.saveInsertionPoint();
-    while (!isa<FModuleOp>(parentOp)) {
-      builder.setInsertionPoint(parentOp);
-      parentOp = builder.getInsertionBlock()->getParentOp();
-    }
-  }
-
   locationProcessor.setLoc(loc);
-  auto op = builder.create<ConstantOp>(type, value);
-  entry = op;
-  result = op;
-
-  if (savedIP.isSet())
-    builder.setInsertionPoint(savedIP.getBlock(), savedIP.getPoint());
+  result = moduleContext.getCachedConstantInt(builder, attr, type, value);
   return success();
 }
 
@@ -1944,6 +1956,14 @@ ParseResult FIRStmtParser::parseSimpleStmtImpl(unsigned stmtIndent) {
     return parseWhen(stmtIndent);
   case FIRToken::kw_define:
     return parseRefDefine();
+  case FIRToken::lp_force:
+    return parseRefForce();
+  case FIRToken::lp_force_initial:
+    return parseRefForceInitial();
+  case FIRToken::lp_release:
+    return parseRefRelease();
+  case FIRToken::lp_release_initial:
+    return parseRefReleaseInitial();
 
   default: {
     // Statement productions that start with an expression.
@@ -2458,7 +2478,146 @@ ParseResult FIRStmtParser::parseRWProbe(Value &result) {
           staticRef.getDefiningOp()))
     return emitError(startTok.getLoc(), "cannot probe memories or their ports");
 
-  result = builder.create<RefSendOp>(staticRef);
+  // TODO: Support for non-public ports.
+  if (isa<BlockArgument>(staticRef))
+    return emitError(startTok.getLoc(), "rwprobe of port not yet supported");
+  auto *op = staticRef.getDefiningOp();
+  if (!op)
+    return emitError(startTok.getLoc(),
+                     "rwprobe value must be defined by an operation");
+  auto forceable = dyn_cast<Forceable>(op);
+  if (!forceable || !forceable.isForceable() /* e.g., is/has const type*/)
+    return emitError(startTok.getLoc(), "rwprobe target not forceable")
+        .attachNote(op->getLoc());
+
+  result = forceable.getDataRef();
+
+  return success();
+}
+
+/// force ::= 'force(' exp exp ref_expr exp ')' info?
+ParseResult FIRStmtParser::parseRefForce() {
+  auto startTok = consumeToken(FIRToken::lp_force);
+
+  Value clock, pred, dest, src;
+  if (parseExp(clock, "expected clock expression in force") ||
+      parseExp(pred, "expected predicate expression in force") ||
+      parseRefExp(dest, "expected destination reference expression in force") ||
+      parseExp(src, "expected source expression in force") ||
+      parseToken(FIRToken::r_paren, "expected ')' in force") ||
+      parseOptionalInfo())
+    return failure();
+
+  // Check reference expression is of reference type.
+  if (auto ref = dyn_cast<RefType>(dest.getType()); !ref || !ref.getForceable())
+    return emitError(
+               startTok.getLoc(),
+               "expected rwprobe-type expression for force destination, got ")
+           << dest.getType();
+  if (isa<RefType>(src.getType()))
+    return emitError(startTok.getLoc(),
+                     "expected non-reference-type for force source, got ")
+           << src.getType();
+
+  locationProcessor.setLoc(startTok.getLoc());
+
+  builder.create<RefForceOp>(clock, pred, dest, src);
+
+  return success();
+}
+
+/// force_initial ::= 'force_initial(' ref_expr exp ')' info?
+ParseResult FIRStmtParser::parseRefForceInitial() {
+  auto startTok = consumeToken(FIRToken::lp_force_initial);
+
+  Value dest, src;
+  if (parseRefExp(
+          dest, "expected destination reference expression in force_initial") ||
+      parseExp(src, "expected source expression in force_initial") ||
+      parseToken(FIRToken::r_paren, "expected ')' in force_initial") ||
+      parseOptionalInfo())
+    return failure();
+
+  // Check reference expression is of reference type.
+  if (auto ref = dyn_cast<RefType>(dest.getType()); !ref || !ref.getForceable())
+    return emitError(startTok.getLoc(), "expected rwprobe-type expression for "
+                                        "force_initial destination, got ")
+           << dest.getType();
+  if (isa<RefType>(src.getType()))
+    return emitError(startTok.getLoc(),
+                     "expected non-reference-type expression for force_initial "
+                     "source, got ")
+           << src.getType();
+
+  locationProcessor.setLoc(startTok.getLoc());
+
+  auto value = APInt::getAllOnes(1);
+  auto type = UIntType::get(builder.getContext(), 1);
+  auto attr = builder.getIntegerAttr(IntegerType::get(type.getContext(),
+                                                      value.getBitWidth(),
+                                                      IntegerType::Unsigned),
+                                     value);
+  auto pred = moduleContext.getCachedConstantInt(builder, attr, type, value);
+  builder.create<RefForceInitialOp>(pred, dest, src);
+
+  return success();
+}
+
+/// release ::= 'release(' exp exp ref_expr ')' info?
+ParseResult FIRStmtParser::parseRefRelease() {
+  auto startTok = consumeToken(FIRToken::lp_release);
+
+  Value clock, pred, dest;
+  if (parseExp(clock, "expected clock expression in release") ||
+      parseExp(pred, "expected predicate expression in release") ||
+      parseRefExp(dest,
+                  "expected destination reference expression in release") ||
+      parseToken(FIRToken::r_paren, "expected ')' in release") ||
+      parseOptionalInfo())
+    return failure();
+
+  // Check reference expression is of reference type.
+  if (auto ref = dyn_cast<RefType>(dest.getType()); !ref || !ref.getForceable())
+    return emitError(
+               startTok.getLoc(),
+               "expected rwprobe-type expression for release destination, got ")
+           << dest.getType();
+
+  locationProcessor.setLoc(startTok.getLoc());
+
+  builder.create<RefReleaseOp>(clock, pred, dest);
+
+  return success();
+}
+
+/// release_initial ::= 'release_initial(' ref_expr ')' info?
+ParseResult FIRStmtParser::parseRefReleaseInitial() {
+  auto startTok = consumeToken(FIRToken::lp_release_initial);
+
+  Value dest;
+  if (parseRefExp(
+          dest,
+          "expected destination reference expression in release_initial") ||
+      parseToken(FIRToken::r_paren, "expected ')' in release_initial") ||
+      parseOptionalInfo())
+    return failure();
+
+  // Check reference expression is of reference type.
+  if (auto ref = dyn_cast<RefType>(dest.getType()); !ref || !ref.getForceable())
+    return emitError(startTok.getLoc(), "expected rwprobe-type expression for "
+                                        "release_initial destination, got ")
+           << dest.getType();
+
+  locationProcessor.setLoc(startTok.getLoc());
+
+  auto value = APInt::getAllOnes(1);
+  auto type = UIntType::get(builder.getContext(), 1);
+  auto attr = builder.getIntegerAttr(IntegerType::get(type.getContext(),
+                                                      value.getBitWidth(),
+                                                      IntegerType::Unsigned),
+                                     value);
+  auto pred = moduleContext.getCachedConstantInt(builder, attr, type, value);
+  builder.create<RefReleaseInitialOp>(pred, dest);
 
   return success();
 }
@@ -2777,7 +2936,7 @@ ParseResult FIRStmtParser::parseMem(unsigned memIndent) {
       resultTypes, readLatency, writeLatency, depth, ruw,
       builder.getArrayAttr(resultNames), id, NameKindEnum::InterestingName,
       annotations, builder.getArrayAttr(resultAnnotations), hw::InnerSymAttr(),
-      IntegerAttr(), MemoryInitAttr());
+      MemoryInitAttr(), StringAttr());
 
   UnbundledValueEntry unbundledValueEntry;
   unbundledValueEntry.reserve(result.getNumResults());
@@ -2830,10 +2989,13 @@ ParseResult FIRStmtParser::parseNode() {
 
   auto annotations = getConstants().emptyArrayAttr;
   StringAttr sym = {};
+  // TODO: isConst -> hasConst.
+  bool forceable = !isConst(initializer.getType());
   auto result =
-      builder.create<NodeOp>(initializer.getType(), initializer, id,
-                             NameKindEnum::InterestingName, annotations, sym);
-  return moduleContext.addSymbolEntry(id, result, startTok.getLoc());
+      builder.create<NodeOp>(initializer, id, NameKindEnum::InterestingName,
+                             annotations, sym, forceable);
+  return moduleContext.addSymbolEntry(id, result.getResult(),
+                                      startTok.getLoc());
 }
 
 /// wire ::= 'wire' id ':' type info?
@@ -2857,10 +3019,12 @@ ParseResult FIRStmtParser::parseWire() {
   auto annotations = getConstants().emptyArrayAttr;
   StringAttr sym = {};
 
-  auto result = builder.create<WireOp>(
-      type, id, NameKindEnum::InterestingName, annotations,
-      sym ? hw::InnerSymAttr::get(sym) : hw::InnerSymAttr());
-  return moduleContext.addSymbolEntry(id, result, startTok.getLoc());
+  // TODO: isConst -> hasConst.
+  bool forceable = !isConst(type);
+  auto result = builder.create<WireOp>(type, id, NameKindEnum::InterestingName,
+                                       annotations, sym, forceable);
+  return moduleContext.addSymbolEntry(id, result.getResult(),
+                                      startTok.getLoc());
 }
 
 /// register    ::= 'reg' id ':' type exp ('with' ':' reset_block)? info?
@@ -2948,13 +3112,19 @@ ParseResult FIRStmtParser::parseRegister(unsigned regIndent) {
   ArrayAttr annotations = getConstants().emptyArrayAttr;
   Value result;
   StringAttr sym = {};
+  // TODO: isConst -> hasConst.
+  bool forceable = !isConst(type);
   if (resetSignal)
-    result = builder.create<RegResetOp>(type, clock, resetSignal, resetValue,
-                                        id, NameKindEnum::InterestingName,
-                                        annotations, sym);
+    result = builder
+                 .create<RegResetOp>(type, clock, resetSignal, resetValue, id,
+                                     NameKindEnum::InterestingName, annotations,
+                                     sym, forceable)
+                 .getResult();
   else
-    result = builder.create<RegOp>(
-        type, clock, id, NameKindEnum::InterestingName, annotations, sym);
+    result = builder
+                 .create<RegOp>(type, clock, id, NameKindEnum::InterestingName,
+                                annotations, sym, forceable)
+                 .getResult();
   return moduleContext.addSymbolEntry(id, result, startTok.getLoc());
 }
 
@@ -3348,16 +3518,14 @@ ParseResult FIRCircuitParser::parseModule(CircuitOp circuit,
           "references in ports must be output on extmodule and intmodule");
     auto *refStmtIt = llvm::find_if(
         refStatements, [&](const auto &r) { return r.refName == port.name; });
-    // Error if no ref statement found.
+    // Deviate from FIRRTL 2.0 requirement, allow missing ref.
+    // If used/needed, will error later in pipeline.
     if (refStmtIt == refStatements.end())
-      return mlir::emitError(port.loc, "no ref statement found for ref port ")
-          .append(port.name);
-
+      continue;
     usedRefs.set(std::distance(refStatements.begin(), refStmtIt));
     internalPathAttrs.push_back(refStmtIt->resolvedPath);
   }
-  if (internalPathAttrs.size() != refStatements.size()) {
-    assert(internalPathAttrs.size() < refStatements.size());
+  if (internalPathAttrs.size() < refStatements.size()) {
     assert(!usedRefs.all());
     auto idx = usedRefs.find_first_unset();
     assert(idx != -1);
@@ -3433,6 +3601,12 @@ FIRCircuitParser::parseModuleBody(DeferredModuleToParse &deferredModule) {
     if (failed(result))
       return result;
   }
+
+  // Demote any forceable operations that aren't being forced.
+  deferredModule.moduleOp.walk([](Forceable fop) {
+    if (fop.isForceable() && fop.getDataRef().use_empty())
+      firrtl::detail::replaceWithNewForceability(fop, false);
+  });
 
   return success();
 }

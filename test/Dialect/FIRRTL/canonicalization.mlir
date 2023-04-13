@@ -5,6 +5,7 @@ firrtl.circuit "Casts" {
 // CHECK-LABEL: firrtl.module @Casts
 firrtl.module @Casts(in %ui1 : !firrtl.uint<1>, in %si1 : !firrtl.sint<1>,
     in %clock : !firrtl.clock, in %asyncreset : !firrtl.asyncreset,
+    in %inreset : !firrtl.reset, out %outreset : !firrtl.reset,
     out %out_ui1 : !firrtl.uint<1>, out %out_si1 : !firrtl.sint<1>,
     out %out_clock : !firrtl.clock, out %out_asyncreset : !firrtl.asyncreset) {
 
@@ -42,6 +43,9 @@ firrtl.module @Casts(in %ui1 : !firrtl.uint<1>, in %si1 : !firrtl.sint<1>,
   // CHECK: firrtl.strictconnect %out_asyncreset, %c1_asyncreset : !firrtl.asyncreset
   %7 = firrtl.asAsyncReset %c1_ui1 : (!firrtl.uint<1>) -> !firrtl.asyncreset
   firrtl.connect %out_asyncreset, %7 : !firrtl.asyncreset, !firrtl.asyncreset
+  // CHECK: firrtl.strictconnect %outreset, %inreset : !firrtl.reset
+  %8 = firrtl.resetCast %inreset : (!firrtl.reset) -> !firrtl.reset
+  firrtl.strictconnect %outreset, %8 : !firrtl.reset
 }
 
 // CHECK-LABEL: firrtl.module @Div
@@ -2051,6 +2055,19 @@ firrtl.module @RegresetToReg(in %clock: !firrtl.clock, in %dummy : !firrtl.uint<
   firrtl.connect %foo2, %bar2 : !firrtl.uint<1>, !firrtl.uint<1>
 }
 
+// CHECK-LABEL: firrtl.module @ForceableRegResetToNode
+// Correctness, revisit if this is "valid" if forceable.
+firrtl.module @ForceableRegResetToNode(in %clock: !firrtl.clock, in %dummy : !firrtl.uint<1>, out %foo: !firrtl.uint<1>, out %ref : !firrtl.rwprobe<uint<1>>) {
+  %c1_ui1 = firrtl.constant 1 : !firrtl.uint<1>
+  %one_asyncreset = firrtl.asAsyncReset %c1_ui1 : (!firrtl.uint<1>) -> !firrtl.asyncreset
+  // CHECK: %reg, %reg_ref = firrtl.node %dummy forceable : !firrtl.uint<1>
+  %reg, %reg_f = firrtl.regreset %clock, %one_asyncreset, %dummy forceable : !firrtl.clock, !firrtl.asyncreset, !firrtl.uint<1>, !firrtl.uint<1>, !firrtl.rwprobe<uint<1>>
+  firrtl.ref.define %ref, %reg_f: !firrtl.rwprobe<uint<1>>
+
+  firrtl.connect %reg, %dummy: !firrtl.uint<1>, !firrtl.uint<1>
+  firrtl.connect %foo, %reg: !firrtl.uint<1>, !firrtl.uint<1>
+}
+
 // https://github.com/llvm/circt/issues/929
 // CHECK-LABEL: firrtl.module @MuxInvalidTypeOpt
 firrtl.module @MuxInvalidTypeOpt(in %in : !firrtl.uint<1>, out %out : !firrtl.uint<4>) {
@@ -2811,4 +2828,15 @@ firrtl.module @AggregateCreate(in %vector_in: !firrtl.vector<uint<1>, 2>,
   // CHECK-NEXT: firrtl.strictconnect %bundle_out, %bundle_in : !firrtl.bundle<a: uint<1>, b: uint<1>>
 }
 
+
+// CHECK-LABEL: firrtl.module private @RWProbeUnused
+firrtl.module private @RWProbeUnused(in %in: !firrtl.uint<4>, in %clk: !firrtl.clock, out %out: !firrtl.uint) {
+  // CHECK-NOT: forceable
+  %n, %n_ref = firrtl.node interesting_name %in forceable : !firrtl.uint<4>
+  %w, %w_ref = firrtl.wire interesting_name forceable : !firrtl.uint, !firrtl.rwprobe<uint>
+  firrtl.connect %w, %n : !firrtl.uint, !firrtl.uint<4>
+  %r, %r_ref = firrtl.reg interesting_name %clk forceable : !firrtl.clock, !firrtl.uint, !firrtl.rwprobe<uint>
+  firrtl.connect %r, %w : !firrtl.uint, !firrtl.uint
+  firrtl.connect %out, %r : !firrtl.uint, !firrtl.uint
+}
 }

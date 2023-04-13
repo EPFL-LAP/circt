@@ -1336,7 +1336,7 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
       .Case<NodeOp>([&](auto op) {
         // Nodes have the same type as their input.
         unifyTypes(FieldRef(op.getResult(), 0), FieldRef(op.getInput(), 0),
-                   op.getType());
+                   op.getResult().getType());
       })
 
       // Aggregate Values
@@ -1351,6 +1351,17 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
         // of the vector, which has a field ID of 1.
         unifyTypes(FieldRef(op.getResult(), 0), FieldRef(op.getInput(), 1),
                    op.getType());
+      })
+
+      .Case<RefSubOp>([&](RefSubOp op) {
+        uint64_t fieldID = TypeSwitch<FIRRTLBaseType, uint64_t>(
+                               op.getInput().getType().getType())
+                               .Case<FVectorType>([](auto _) { return 1; })
+                               .Case<BundleType>([&](auto type) {
+                                 return type.getFieldID(op.getIndex());
+                               });
+        unifyTypes(FieldRef(op.getResult(), 0),
+                   FieldRef(op.getInput(), fieldID), op.getType());
       })
 
       // Arithmetic and Logical Binary Primitives
@@ -1610,6 +1621,12 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
         op->emitOpError("not supported in width inference");
         mappingFailed = true;
       });
+
+  // Forceable declarations should have the ref constrained to data result.
+  if (auto fop = dyn_cast<Forceable>(op); fop && fop.isForceable()) {
+    declareVars(fop.getDataRef(), fop.getLoc());
+    constrainTypes(fop.getDataRef(), fop.getDataRaw());
+  }
 
   return failure(mappingFailed);
 }
@@ -1966,12 +1983,15 @@ bool InferenceTypeUpdate::updateOperation(Operation *op) {
 static FIRRTLBaseType resizeType(FIRRTLBaseType type, uint32_t newWidth) {
   auto *context = type.getContext();
   return TypeSwitch<FIRRTLBaseType, FIRRTLBaseType>(type)
-      .Case<UIntType>(
-          [&](auto type) { return UIntType::get(context, newWidth); })
-      .Case<SIntType>(
-          [&](auto type) { return SIntType::get(context, newWidth); })
-      .Case<AnalogType>(
-          [&](auto type) { return AnalogType::get(context, newWidth); })
+      .Case<UIntType>([&](auto type) {
+        return UIntType::get(context, newWidth, type.isConst());
+      })
+      .Case<SIntType>([&](auto type) {
+        return SIntType::get(context, newWidth, type.isConst());
+      })
+      .Case<AnalogType>([&](auto type) {
+        return AnalogType::get(context, newWidth, type.isConst());
+      })
       .Default([&](auto type) { return type; });
 }
 
@@ -2030,15 +2050,16 @@ bool InferenceTypeUpdate::updateValue(Value value) {
         elements.emplace_back(element.name, element.isFlip,
                               updateBase(element.type));
       }
-      return BundleType::get(context, elements);
+      return BundleType::get(context, elements, bundleType.isConst());
     } else if (auto vecType = type.dyn_cast<FVectorType>()) {
       fieldID++;
       auto save = fieldID;
       // TODO: this should recurse into the element type of 0 length vectors and
       // set any unknown width to 0.
       if (vecType.getNumElements() > 0) {
-        auto newType = FVectorType::get(updateBase(vecType.getElementType()),
-                                        vecType.getNumElements());
+        auto newType =
+            FVectorType::get(updateBase(vecType.getElementType()),
+                             vecType.getNumElements(), vecType.isConst());
         fieldID = save + vecType.getMaxFieldID();
         return newType;
       }

@@ -910,7 +910,7 @@ firrtl.circuit "Parent" {
     %w = firrtl.wire sym @w : !firrtl.uint<1>
   }
   firrtl.module @Parent() {
-    // expected-error @+1 {{cannot assign symbols to non-zero field id, for ops with zero or multiple results}}
+    // expected-error @below {{'firrtl.instance' op does not support per-field inner symbols}}
     firrtl.instance child sym [<@w3,1,public>,<@w3,2,private>,<@syh2,0,public>] @Child()
   }
 }
@@ -919,8 +919,8 @@ firrtl.circuit "Parent" {
 
 firrtl.circuit "Foo" {
   firrtl.module @Foo() {
-  // expected-error @+1 {{field id:'1' is greater than the maximum field id:'0'}}
-    %m = firrtl.mem sym [<@w3,1,public>,<@w3,2,private>,<@syh2,0,public>] Undefined {depth = 32 : i64, name = "m", portNames = ["rw"], readLatency = 0 : i32, writeLatency = 1 : i32} : !firrtl.bundle<>
+  // expected-error @below {{'firrtl.mem' op does not support per-field inner symbols}}
+    %m = firrtl.mem sym [<@x,1,public>,<@y,2,public>] Undefined {depth = 16 : i64, name = "ReadMemory", portNames = ["read0"], readLatency = 1 : i32, writeLatency = 1 : i32} : !firrtl.bundle<addr: uint<4>, en: uint<1>, clk: clock, data flip: sint<8>>
   }
 }
 
@@ -930,7 +930,7 @@ firrtl.circuit "Foo"   {
   firrtl.module @Bar(in %a: !firrtl.uint<1>, out %b: !firrtl.bundle<baz: uint<1>, qux: uint<1>>, out %c: !firrtl.uint<1>) {
   }
   firrtl.module @Foo() {
-    // expected-error @+1 {{cannot assign symbols to non-zero field id, for ops with zero or multiple results}}
+    // expected-error @+1 {{'firrtl.instance' op does not support per-field inner symbols}}
     %bar_a, %bar_b, %bar_c = firrtl.instance bar sym [<@w3,1,public>,<@w3,2,private>,<@syh2,0,public>] @Bar(in a: !firrtl.uint<1> [{one}], out b: !firrtl.bundle<baz: uint<1>, qux: uint<1>> [{circt.fieldID = 1 : i32, two}], out c: !firrtl.uint<1> [{four}])
   }
 }
@@ -1147,4 +1147,80 @@ firrtl.circuit "AnalogDifferentWidths" {
     // expected-error @below {{not all known operand widths match}}
     firrtl.attach %a, %b : !firrtl.analog<1>, !firrtl.analog<2>
   }
+}
+
+// -----
+
+firrtl.circuit "ForceableWithoutRefResult" {
+  firrtl.module @ForceableWithoutRefResult() {
+    // expected-error @below {{op must have ref result iff marked forceable}}
+    %w = firrtl.wire forceable : !firrtl.uint<2>
+  }
+}
+
+// -----
+
+firrtl.circuit "RefResultButNotForceable" {
+  firrtl.module @RefResultButNotForceable() {
+    // expected-error @below {{op must have ref result iff marked forceable}}
+    %w, %w_f = firrtl.wire : !firrtl.uint<2>, !firrtl.rwprobe<uint<2>>
+  }
+}
+
+// -----
+
+firrtl.circuit "ForceableTypeMismatch" {
+  firrtl.module @ForceableTypeMismatch() {
+    // expected-error @below {{reference result of incorrect type, found}}
+    %w, %w_f = firrtl.wire forceable : !firrtl.uint, !firrtl.rwprobe<uint<2>>
+  }
+}
+
+// -----
+
+firrtl.circuit "RefForceProbe" {
+  firrtl.module @RefForceProbe() {
+    %a = firrtl.wire : !firrtl.uint<1>
+    %1 = firrtl.ref.send %a : !firrtl.uint<1>
+    // expected-note @above {{prior use here}}
+    // expected-error @below {{use of value '%1' expects different type than prior uses: '!firrtl.rwprobe<uint<1>>' vs '!firrtl.probe<uint<1>>'}}
+    firrtl.ref.force_initial %a, %1, %a : !firrtl.uint<1>, !firrtl.uint<1>
+  }
+}
+
+// -----
+
+firrtl.circuit "RefReleaseProbe" {
+  firrtl.module @RefReleaseProbe() {
+    %a = firrtl.wire : !firrtl.uint<1>
+    %1 = firrtl.ref.send %a : !firrtl.uint<1>
+    // expected-error @below {{op operand #1 must be rwprobe type, but got '!firrtl.probe<uint<1>>'}}
+    firrtl.ref.release_initial %a, %1 : !firrtl.uint<1>, !firrtl.probe<uint<1>>
+  }
+}
+
+
+// -----
+
+firrtl.circuit "EnumCreateNoCase" {
+firrtl.module @EnumCreateNoCase(in %in : !firrtl.uint<8>) {
+  // expected-error @below {{unknown field SomeOther in enum type}}
+  %some = firrtl.enumcreate SomeOther(%in) : !firrtl.enum<None: uint<0>, Some: uint<8>>
+}
+
+// -----
+
+firrtl.circuit "EnumCreateWrongType" {
+  // expected-note @below {{prior use here}}
+firrtl.module @EnumCreateWrongType(in %in : !firrtl.uint<7>) {
+  // expected-error @below {{expects different type than prior uses}}
+  %some = firrtl.enumcreate Some(%in) : !firrtl.enum<None: uint<0>, Some: uint<8>>
+}
+
+// -----
+
+firrtl.circuit "SubtagNoCase" {
+firrtl.module @SubtagNoCase(in %in : !firrtl.enum<None: uint<0>, Some: uint<8>>) {
+  // expected-error @below {{unknown field SomeOther in enum type}}
+  %some = firrtl.subtag %in[SomeOther] : !firrtl.enum<None: uint<0>, Some: uint<8>>
 }

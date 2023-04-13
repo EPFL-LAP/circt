@@ -426,8 +426,8 @@ firrtl.circuit "Top"  {
   // CHECK-SAME: (in %clock: !firrtl.clock, in %io_addr: !firrtl.uint<3>, in %io_dataIn: !firrtl.uint<8>, in %io_wen: !firrtl.uint<1>, out %io_dataOut: !firrtl.uint<8>)
   firrtl.module private @DUTModule(in %clock: !firrtl.clock, in %io_addr: !firrtl.uint<3>, in %io_dataIn: !firrtl.uint<8>, in %io_wen: !firrtl.uint<1>, out %io_dataOut: !firrtl.uint<8>, out %_gen_memTap: !firrtl.probe<vector<uint<8>, 8>>) attributes {annotations = [{class = "sifive.enterprise.firrtl.MarkDUTAnnotation"}]} {
     %c1_ui1 = firrtl.constant 1 : !firrtl.uint<1>
-    %rf_memTap, %rf_read, %rf_write = firrtl.mem  Undefined  {depth = 8 : i64, groupID = 1 : ui32, name = "rf", portNames = ["memTap", "read", "write"], readLatency = 0 : i32, writeLatency = 1 : i32} : !firrtl.probe<vector<uint<8>, 8>>, !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data flip: uint<8>>, !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data: uint<8>, mask: uint<1>>
-    // CHECK:  %rf_read, %rf_write = firrtl.mem sym @xmr_sym  Undefined  {depth = 8 : i64, groupID = 1 : ui32, name = "rf", portNames = ["read", "write"], readLatency = 0 : i32, writeLatency = 1 : i32} : !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data flip: uint<8>>, !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data: uint<8>, mask: uint<1>>
+    %rf_memTap, %rf_read, %rf_write = firrtl.mem  Undefined  {depth = 8 : i64, name = "rf", portNames = ["memTap", "read", "write"], prefix = "foo_", readLatency = 0 : i32, writeLatency = 1 : i32} : !firrtl.probe<vector<uint<8>, 8>>, !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data flip: uint<8>>, !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data: uint<8>, mask: uint<1>>
+    // CHECK:  %rf_read, %rf_write = firrtl.mem sym @xmr_sym  Undefined  {depth = 8 : i64, name = "rf", portNames = ["read", "write"], prefix = "foo_", readLatency = 0 : i32, writeLatency = 1 : i32} : !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data flip: uint<8>>, !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data: uint<8>, mask: uint<1>>
     %0 = firrtl.subfield %rf_read[addr] : !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data flip: uint<8>>
     %1 = firrtl.subfield %rf_read[en] : !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data flip: uint<8>>
     %2 = firrtl.subfield %rf_read[clk] : !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data flip: uint<8>>
@@ -510,8 +510,8 @@ firrtl.circuit "Top"  {
   // CHECK-SAME: in %io_wen: !firrtl.uint<1>, out %io_dataOut: !firrtl.uint<8>)
   firrtl.module private @DUTModule(in %clock: !firrtl.clock, in %io_addr: !firrtl.uint<3>, in %io_dataIn: !firrtl.uint<8>, in %io_wen: !firrtl.uint<1>, out %io_dataOut: !firrtl.uint<8>, out %_gen_memTap_0: !firrtl.probe<uint<8>>, out %_gen_memTap_1: !firrtl.probe<uint<8>>) attributes {annotations = [{class = "sifive.enterprise.firrtl.MarkDUTAnnotation"}]} {
     %c1_ui1 = firrtl.constant 1 : !firrtl.uint<1>
-    %rf_memTap, %rf_read, %rf_write = firrtl.mem  Undefined  {depth = 2 : i64, groupID = 1 : ui32, name = "rf", portNames = ["memTap", "read", "write"], readLatency = 0 : i32, writeLatency = 1 : i32} : !firrtl.probe<vector<uint<8>, 2>>, !firrtl.bundle<addr: uint<1>, en: uint<1>, clk: clock, data flip: uint<8>>, !firrtl.bundle<addr: uint<1>, en: uint<1>, clk: clock, data: uint<8>, mask: uint<1>>
-    // CHECK:  %rf_read, %rf_write = firrtl.mem sym @xmr_sym  Undefined  {depth = 2 : i64, groupID = 1 : ui32, name = "rf", portNames = ["read", "write"], readLatency = 0 : i32, writeLatency = 1 : i32} : !firrtl.bundle<addr: uint<1>, en: uint<1>, clk: clock, data flip: uint<8>>, !firrtl.bundle<addr: uint<1>, en: uint<1>, clk: clock, data: uint<8>, mask: uint<1>>
+    %rf_memTap, %rf_read, %rf_write = firrtl.mem  Undefined  {depth = 2 : i64, name = "rf", portNames = ["memTap", "read", "write"], prefix = "foo_", readLatency = 0 : i32, writeLatency = 1 : i32} : !firrtl.probe<vector<uint<8>, 2>>, !firrtl.bundle<addr: uint<1>, en: uint<1>, clk: clock, data flip: uint<8>>, !firrtl.bundle<addr: uint<1>, en: uint<1>, clk: clock, data: uint<8>, mask: uint<1>>
+    // CHECK:  %rf_read, %rf_write = firrtl.mem sym @xmr_sym  Undefined  {depth = 2 : i64, name = "rf", portNames = ["read", "write"], prefix = "foo_", readLatency = 0 : i32, writeLatency = 1 : i32} : !firrtl.bundle<addr: uint<1>, en: uint<1>, clk: clock, data flip: uint<8>>, !firrtl.bundle<addr: uint<1>, en: uint<1>, clk: clock, data: uint<8>, mask: uint<1>>
     %9 = firrtl.ref.sub %rf_memTap[0] : !firrtl.probe<vector<uint<8>, 2>>
     firrtl.ref.define %_gen_memTap_0, %9 : !firrtl.probe<uint<8>>
     %10 = firrtl.ref.sub %rf_memTap[1] : !firrtl.probe<vector<uint<8>, 2>>
@@ -636,3 +636,59 @@ firrtl.circuit "Issue4559" {
     %port_val = firrtl.ref.resolve %port_ref : !firrtl.probe<uint<1>>
   }
 }
+
+// -----
+// Check read-only XMR of a rwprobe.
+
+// CHECK-LABEL: firrtl.circuit "ReadForceable"
+firrtl.circuit "ReadForceable" {
+  // CHECK-LABEL: firrtl.module @ReadForceable(out %o: !firrtl.uint<2>)
+  firrtl.module @ReadForceable(out %o: !firrtl.uint<2>) {
+    %w, %w_ref = firrtl.wire forceable : !firrtl.uint<2>, !firrtl.rwprobe<uint<2>>
+    %x = firrtl.ref.resolve %w_ref : !firrtl.rwprobe<uint<2>>
+    // CHECK-NOT: firrtl.ref.resolve
+    firrtl.strictconnect %o, %x : !firrtl.uint<2>
+    // CHECK:      %w, %w_ref = firrtl.wire sym @[[wSym:[a-zA-Z0-9_]+]] forceable : !firrtl.uint<2>, !firrtl.rwprobe<uint<2>>
+    // CHECK-NEXT: %[[#xmr:]] = sv.xmr.ref #hw.innerNameRef<@ReadForceable::@[[wSym]]> : !hw.inout<i2>
+    // CHECK-NEXT: %[[#cast:]] = builtin.unrealized_conversion_cast %[[#xmr]] : !hw.inout<i2> to !firrtl.uint<2>
+    // CHECK:      firrtl.strictconnect %o, %[[#cast]] : !firrtl.uint<2>
+  }
+}
+
+// -----
+
+// CHECK-LABEL: firrtl.circuit "ForceRelease"
+firrtl.circuit "ForceRelease" {
+  // CHECK: hw.hierpath private @[[XMRPATH:.+]] [@ForceRelease::@[[INST_SYM:.+]], @RefMe::@[[TARGET_SYM:.+]]]
+  // CHECK: firrtl.module private @RefMe() {
+  firrtl.module private @RefMe(out %p: !firrtl.rwprobe<uint<4>>) {
+    // CHECK-NEXT: %x, %x_ref = firrtl.wire sym @[[TARGET_SYM]] forceable : !firrtl.uint<4>, !firrtl.rwprobe<uint<4>>
+    %x, %x_ref = firrtl.wire forceable : !firrtl.uint<4>, !firrtl.rwprobe<uint<4>>
+    // CHECK-NEXT: }
+    firrtl.ref.define %p, %x_ref : !firrtl.rwprobe<uint<4>>
+  }
+  // CHECK-LABEL: firrtl.module @ForceRelease
+  firrtl.module @ForceRelease(in %c: !firrtl.uint<1>, in %clock: !firrtl.clock, in %x: !firrtl.uint<4>) {
+      // CHECK-NEXT: firrtl.instance r sym @[[INST_SYM]] @RefMe()
+      %r_p = firrtl.instance r @RefMe(out p: !firrtl.rwprobe<uint<4>>)
+      // CHECK-NEXT: %[[REF1:.+]] = sv.xmr.ref @[[XMRPATH]] : !hw.inout<i4>
+      // CHECK-NEXT: %[[CAST1:.+]] = builtin.unrealized_conversion_cast %[[REF1]] : !hw.inout<i4> to !firrtl.rwprobe<uint<4>>
+   
+      // CHECK-NEXT: firrtl.ref.force %clock, %c, %[[CAST1]], %x : !firrtl.clock, !firrtl.uint<1>, !firrtl.uint<4>
+
+      firrtl.ref.force %clock, %c, %r_p, %x : !firrtl.clock, !firrtl.uint<1>, !firrtl.uint<4>
+      // CHECK-NEXT: %[[REF2:.+]] = sv.xmr.ref @[[XMRPATH]] : !hw.inout<i4>
+      // CHECK-NEXT: %[[CAST2:.+]] = builtin.unrealized_conversion_cast %[[REF2]] : !hw.inout<i4> to !firrtl.rwprobe<uint<4>>
+
+      // CHECK-NEXT: firrtl.ref.force_initial %c, %[[CAST2]], %x : !firrtl.uint<1>, !firrtl.uint<4>
+      firrtl.ref.force_initial %c, %r_p, %x : !firrtl.uint<1>, !firrtl.uint<4>
+      // CHECK-NEXT: %[[REF3:.+]] = sv.xmr.ref @[[XMRPATH]] : !hw.inout<i4>
+      // CHECK-NEXT: %[[CAST3:.+]] = builtin.unrealized_conversion_cast %[[REF3]] : !hw.inout<i4> to !firrtl.rwprobe<uint<4>>
+      // CHECK-NEXT: firrtl.ref.release %clock, %c, %[[CAST3]] : !firrtl.clock, !firrtl.uint<1>, !firrtl.rwprobe<uint<4>>
+      firrtl.ref.release %clock, %c, %r_p : !firrtl.clock, !firrtl.uint<1>, !firrtl.rwprobe<uint<4>>
+      // CHECK-NEXT: %[[REF4:.+]] = sv.xmr.ref @[[XMRPATH]] : !hw.inout<i4>
+      // CHECK-NEXT: %[[CAST4:.+]] = builtin.unrealized_conversion_cast %[[REF4]] : !hw.inout<i4> to !firrtl.rwprobe<uint<4>>
+      // CHECK-NEXT: firrtl.ref.release_initial %c, %[[CAST4]] : !firrtl.uint<1>, !firrtl.rwprobe<uint<4>>
+      firrtl.ref.release_initial %c, %r_p : !firrtl.uint<1>, !firrtl.rwprobe<uint<4>>
+    }
+  }
