@@ -15,6 +15,7 @@
 
 #include "circt/Dialect/Handshake/HandshakeDialect.h"
 #include "circt/Support/LLVM.h"
+#include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -68,6 +69,8 @@ namespace OpTrait {
 template <typename ConcreteType>
 class HasClock : public TraitBase<ConcreteType, HasClock> {};
 } // namespace OpTrait
+
+struct DependenceComponent;
 } // namespace mlir
 
 #define GET_ATTRDEF_CLASSES
