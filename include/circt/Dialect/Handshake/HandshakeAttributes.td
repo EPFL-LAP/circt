@@ -81,30 +81,26 @@ def MemDependenceAttr : Handshake_Attr<"MemDependence", "dep"> {
   }];
   
   let parameters = (ins 
-    "::circt::handshake::MemAccessNameAttr":$dstAccess,
+    "::mlir::StringAttr":$dstAccess,
     "unsigned":$loopDepth,
     ArrayRefParameter<"::circt::handshake::DependenceComponentAttr">:$components
   );
 
   let builders = [
-    AttrBuilder<(ins  "::circt::handshake::MemAccessNameAttr":$dstAccess, 
+    AttrBuilder<(ins  "::mlir::StringRef":$dstAccess, 
                       "unsigned":$loopDepth,
                       "::mlir::ArrayRef<::mlir::DependenceComponent>":$components), [{
       SmallVector<::circt::handshake::DependenceComponentAttr> compAttrs;
       for (auto &comp : components)
         compAttrs.push_back(::circt::handshake::DependenceComponentAttr::get(
           context, comp.lb, comp.ub));
-      return $_get(context, dstAccess, loopDepth, compAttrs);  
+      return $_get(context, ::mlir::StringAttr::get(context, dstAccess), 
+        loopDepth, compAttrs);  
     }]>
   ];
 
-  let assemblyFormat = "`{` $dstAccess `(` $loopDepth `)` `[` $components `]` `}`";
-
+  let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
-    ::mlir::StringAttr getDstName() {
-      return getDstAccess().getName();
-    }
-
     size_t getNumCommonLoops() {
       return getComponents().size();
     }
@@ -112,7 +108,7 @@ def MemDependenceAttr : Handshake_Attr<"MemDependence", "dep"> {
 }
 
 def MemDependenceArrayAttr : Handshake_Attr<"MemDependenceArray", "deps"> {
-  let summary = "A list of memory depedencies with respect to other memory operations";
+  let summary = "A list of memory dependencies with respect to other memory operations";
   let description = [{
     Reprensents a list of memory dependencies between the operation this
     attribute is attached to and other named memory accesses in the same
