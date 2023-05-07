@@ -846,19 +846,52 @@ firrtl.circuit "Simple"   attributes {annotations = [{class =
   }
 
   // CHECK-LABEL: hw.module private @SimpleEnum(%source: !hw.enum<valid, ready, data>) -> (sink: !hw.enum<valid, ready, data>) {
+  // CHECK-NEXT:    %valid = hw.enum.constant valid : !hw.enum<valid, ready, data
+  // CHECK-NEXT:    %0 = hw.enum.cmp %source, %valid : !hw.enum<valid, ready, data>, !hw.enum<valid, ready, data>
   // CHECK-NEXT:    hw.output %source : !hw.enum<valid, ready, data>
   // CHECK-NEXT:  }
   firrtl.module private @SimpleEnum(in %source: !firrtl.enum<valid: uint<0>, ready: uint<0>, data: uint<0>>,
                               out %sink: !firrtl.enum<valid: uint<0>, ready: uint<0>, data: uint<0>>) {
+    %0 = firrtl.istag %source valid : !firrtl.enum<valid: uint<0>, ready: uint<0>, data: uint<0>>
+    %1 = firrtl.subtag %source[valid] : !firrtl.enum<valid: uint<0>, ready: uint<0>, data: uint<0>>
     firrtl.strictconnect %sink, %source : !firrtl.enum<valid: uint<0>, ready: uint<0>, data: uint<0>>
   }
 
+  // CHECK-LABEL: hw.module private @SimpleEnumCreate() -> (sink: !hw.enum<a, b, c>) { 
+  // CHECK-NEXT:   %a = hw.enum.constant a : !hw.enum<a, b, c> 
+  // CHECK-NEXT:   hw.output %a : !hw.enum<a, b, c> 
+  // CHECK-NEXT: }
+  firrtl.module private @SimpleEnumCreate(in %input: !firrtl.uint<0>,
+                                         out %sink: !firrtl.enum<a: uint<0>, b: uint<0>, c: uint<0>>) {
+    %0 = firrtl.enumcreate a(%input) : !firrtl.enum<a: uint<0>, b: uint<0>, c: uint<0>>
+    firrtl.strictconnect %sink, %0 : !firrtl.enum<a: uint<0>, b: uint<0>, c: uint<0>>
+  }
+
   // CHECK-LABEL:  hw.module private @DataEnum(%source: !hw.struct<tag: !hw.enum<a, b, c>, body: !hw.union<a: i2, b: i1, c: i32>>) -> (sink: !hw.struct<tag: !hw.enum<a, b, c>, body: !hw.union<a: i2, b: i1, c: i32>>) {
+  // CHECK-NEXT:    %tag = hw.struct_extract %source["tag"] : !hw.struct<tag: !hw.enum<a, b, c>, body: !hw.union<a: i2, b: i1, c: i32>>
+  // CHECK-NEXT:    %a = hw.enum.constant a : !hw.enum<a, b, c> 
+  // CHECK-NEXT:    %0 = hw.enum.cmp %tag, %a : !hw.enum<a, b, c>, !hw.enum<a, b, c>
+  // CHECK-NEXT:    %body = hw.struct_extract %source["body"] : !hw.struct<tag: !hw.enum<a, b, c>, body: !hw.union<a: i2, b: i1, c: i32>>
+  // CHECK-NEXT:    %1 = hw.union_extract %body["a"] : !hw.union<a: i2, b: i1, c: i32>
   // CHECK-NEXT:    hw.output %source : !hw.struct<tag: !hw.enum<a, b, c>, body: !hw.union<a: i2, b: i1, c: i32>>
   // CHECK-NEXT:  }
   firrtl.module private @DataEnum(in %source: !firrtl.enum<a: uint<2>, b: uint<1>, c: uint<32>>,
                               out %sink: !firrtl.enum<a: uint<2>, b: uint<1>, c: uint<32>>) {
+    %0 = firrtl.istag %source a : !firrtl.enum<a: uint<2>, b: uint<1>, c: uint<32>>
+    %1 = firrtl.subtag %source[a] : !firrtl.enum<a: uint<2>, b: uint<1>, c: uint<32>>
     firrtl.strictconnect %sink, %source : !firrtl.enum<a: uint<2>, b: uint<1>, c: uint<32>>
+  }
+
+  // CHECK-LABEL: hw.module private @DataEnumCreate(%input: i2) -> (sink: !hw.struct<tag: !hw.enum<a, b, c>, body: !hw.union<a: i2, b: i1, c: i32>>) { 
+  // CHECK-NEXT:   %a = hw.enum.constant a : !hw.enum<a, b, c> 
+  // CHECK-NEXT:   %0 = hw.union_create "a", %input : !hw.union<a: i2, b: i1, c: i32> 
+  // CHECK-NEXT:   %1 = hw.struct_create (%a, %0) : !hw.struct<tag: !hw.enum<a, b, c>, body: !hw.union<a: i2, b: i1, c: i32>> 
+  // CHECK-NEXT:   hw.output %1 : !hw.struct<tag: !hw.enum<a, b, c>, body: !hw.union<a: i2, b: i1, c: i32>> 
+  // CHECK-NEXT: } 
+  firrtl.module private @DataEnumCreate(in %input: !firrtl.uint<2>,
+                                       out %sink: !firrtl.enum<a: uint<2>, b: uint<1>, c: uint<32>>) {
+    %0 = firrtl.enumcreate a (%input) : !firrtl.enum<a: uint<2>, b: uint<1>, c: uint<32>>
+    firrtl.strictconnect %sink, %0 : !firrtl.enum<a: uint<2>, b: uint<1>, c: uint<32>>
   }
 
   // CHECK-LABEL: IsInvalidIssue572
@@ -1487,7 +1520,7 @@ firrtl.circuit "Simple"   attributes {annotations = [{class =
 
     %2 = firrtl.int.plusargs.test "foo"
     firrtl.strictconnect %io2, %2 : !firrtl.uint<1>
-    %3, %4 = firrtl.int.plusargs.value "foo" : !firrtl.uint<1>, !firrtl.uint<5>
+    %3, %4 = firrtl.int.plusargs.value "foo" : !firrtl.uint<5>
     firrtl.strictconnect %io3, %3 : !firrtl.uint<1>
     firrtl.strictconnect %io4, %4 : !firrtl.uint<5>
 
@@ -1590,7 +1623,7 @@ firrtl.circuit "Simple"   attributes {annotations = [{class =
   // CHECK-NEXT:  %[[XMR2:.+]] = sv.xmr.ref @xmrPath : !hw.inout<i4>
   // CHECK-NEXT:  %[[XMR3:.+]] = sv.xmr.ref @xmrPath : !hw.inout<i4>
   // CHECK-NEXT:  %[[XMR4:.+]] = sv.xmr.ref @xmrPath : !hw.inout<i4>
-  // CHECK-NEXT:  sv.ifdef  "VERILATOR" {
+  // CHECK-NEXT:  sv.ifdef  "SYNTHESIS" {
   // CHECK-NEXT:  } else {
   // CHECK-NEXT:    sv.always posedge %clock {
   // CHECK-NEXT:      sv.if %c {
@@ -1605,4 +1638,46 @@ firrtl.circuit "Simple"   attributes {annotations = [{class =
   // CHECK-NEXT:      }
   // CHECK-NEXT:    }
   // CHECK-NEXT:  }
+
+  // CHECK-LABEL: @SVAttr
+  // CHECK-SAME:  attributes {sv.attributes = [#sv.attribute<"keep_hierarchy = \22true\22">]}
+  // CHECK-NEXT: %w = hw.wire %a {sv.attributes = [#sv.attribute<"mark_debug = \22yes\22">]}
+  // CHECK-NEXT: %n = hw.wire %w {sv.attributes = [#sv.attribute<"mark_debug = \22yes\22">]}
+  // CHECK-NEXT: %r = seq.firreg %a clock %clock {firrtl.random_init_start = 0 : ui64, sv.attributes = [#sv.attribute<"keep = \22true\22", emitAsComment>]}
+  firrtl.module @SVAttr(in %a: !firrtl.uint<1>, in %clock: !firrtl.clock, out %b1: !firrtl.uint<1>, out %b2: !firrtl.uint<1>) attributes {convention = #firrtl<convention scalarized>, sv.attributes = [#sv.attribute<"keep_hierarchy = \22true\22">]} {
+    %w = firrtl.wire {sv.attributes = [#sv.attribute<"mark_debug = \22yes\22">]} : !firrtl.uint<1>
+    %n = firrtl.node %w {sv.attributes = [#sv.attribute<"mark_debug = \22yes\22">]} : !firrtl.uint<1>
+    %r = firrtl.reg %clock {firrtl.random_init_start = 0 : ui64, sv.attributes = [#sv.attribute<"keep = \22true\22", emitAsComment>]} : !firrtl.clock, !firrtl.uint<1>
+    firrtl.strictconnect %w, %a : !firrtl.uint<1>
+    firrtl.strictconnect %b1, %n : !firrtl.uint<1>
+    firrtl.strictconnect %r, %a : !firrtl.uint<1>
+    firrtl.strictconnect %b2, %r : !firrtl.uint<1>
+  }
+
+  // CHECK-LABEL: Elementwise
+  firrtl.module @Elementwise(in %a: !firrtl.vector<uint<1>, 2>, in %b: !firrtl.vector<uint<1>, 2>, out %c_0: !firrtl.vector<uint<1>, 2>, out %c_1: !firrtl.vector<uint<1>, 2>, out %c_2: !firrtl.vector<uint<1>, 2>) {
+    %0 = firrtl.elementwise_or %a, %b : (!firrtl.vector<uint<1>, 2>, !firrtl.vector<uint<1>, 2>) -> !firrtl.vector<uint<1>, 2>
+    firrtl.strictconnect %c_0, %0 : !firrtl.vector<uint<1>, 2>
+    %1 = firrtl.elementwise_and %a, %b : (!firrtl.vector<uint<1>, 2>, !firrtl.vector<uint<1>, 2>) -> !firrtl.vector<uint<1>, 2>
+    firrtl.strictconnect %c_1, %1 : !firrtl.vector<uint<1>, 2>
+    %2 = firrtl.elementwise_xor %a, %b : (!firrtl.vector<uint<1>, 2>, !firrtl.vector<uint<1>, 2>) -> !firrtl.vector<uint<1>, 2>
+    firrtl.strictconnect %c_2, %2 : !firrtl.vector<uint<1>, 2>
+
+    // CHECK-NEXT: %0 = hw.bitcast %a : (!hw.array<2xi1>) -> i2
+    // CHECK-NEXT: %1 = hw.bitcast %b : (!hw.array<2xi1>) -> i2
+    // CHECK-NEXT: %2 = comb.or %0, %1 : i2
+    // CHECK-NEXT: %[[OR:.+]] = hw.bitcast %2 : (i2) -> !hw.array<2xi1>
+
+    // CHECK-NEXT: %4 = hw.bitcast %a : (!hw.array<2xi1>) -> i2
+    // CHECK-NEXT: %5 = hw.bitcast %b : (!hw.array<2xi1>) -> i2
+    // CHECK-NEXT: %6 = comb.and %4, %5 : i2
+    // CHECK-NEXT: %[[AND:.+]] = hw.bitcast %6 : (i2) -> !hw.array<2xi1>
+
+    // CHECK-NEXT: %8 = hw.bitcast %a : (!hw.array<2xi1>) -> i2
+    // CHECK-NEXT: %9 = hw.bitcast %b : (!hw.array<2xi1>) -> i2
+    // CHECK-NEXT: %10 = comb.xor %8, %9 : i2
+    // CHECK-NEXT: %[[XOR:.+]] = hw.bitcast %10 : (i2) -> !hw.array<2xi1>
+
+    // CHECK-NEXT: hw.output %[[OR]], %[[AND]], %[[XOR]] : !hw.array<2xi1>, !hw.array<2xi1>, !hw.array<2xi1>
+  }
 }

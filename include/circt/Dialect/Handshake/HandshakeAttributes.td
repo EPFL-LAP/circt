@@ -55,9 +55,9 @@ def MemAccessNameAttr : Handshake_Attr<"MemAccessName", "access_name"> {
 def DependenceComponentAttr : Handshake_Attr<"DependenceComponent", "dep_comp"> {
   let summary = "Information about the direction of a dependence for an AffineForOp";
   let description = [{
-    Holds the same information as a `mlir::DependenceComponent` (except the 
-    `op` it refers to, since this would typically be attached to the operation
-    in question or to one that would reference it through a
+    Holds the same information as a `mlir::affine::DependenceComponent` (except 
+    the `op` it refers to, since this would typically be attached to the
+    operation in question or to one that would reference it through a
     `::circt::handshake::MemDependenceAttr`).
   }];
 
@@ -89,7 +89,7 @@ def MemDependenceAttr : Handshake_Attr<"MemDependence", "dep"> {
   let builders = [
     AttrBuilder<(ins  "::mlir::StringRef":$dstAccess, 
                       "unsigned":$loopDepth,
-                      "::mlir::ArrayRef<::mlir::DependenceComponent>":$components), [{
+                      "::mlir::ArrayRef<::mlir::affine::DependenceComponent>":$components), [{
       SmallVector<::circt::handshake::DependenceComponentAttr> compAttrs;
       for (auto &comp : components)
         compAttrs.push_back(::circt::handshake::DependenceComponentAttr::get(

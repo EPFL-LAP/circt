@@ -83,6 +83,8 @@ std::unique_ptr<mlir::Pass> createDedupPass();
 std::unique_ptr<mlir::Pass>
 createEmitOMIRPass(mlir::StringRef outputFilename = "");
 
+std::unique_ptr<mlir::Pass> createLowerMatchesPass();
+
 std::unique_ptr<mlir::Pass> createExpandWhensPass();
 
 std::unique_ptr<mlir::Pass> createFlattenMemoryPass();
@@ -118,6 +120,8 @@ std::unique_ptr<mlir::Pass> createSFCCompatPass();
 
 std::unique_ptr<mlir::Pass>
 createMergeConnectionsPass(bool enableAggressiveMerging = false);
+
+std::unique_ptr<mlir::Pass> createVectorizationPass();
 
 std::unique_ptr<mlir::Pass> createInjectDUTHierarchyPass();
 

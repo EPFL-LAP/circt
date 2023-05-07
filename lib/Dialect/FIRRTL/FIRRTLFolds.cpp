@@ -182,6 +182,14 @@ static bool isConstantZero(Attribute operand) {
   return false;
 }
 
+/// Determine whether a constant operand is a one value for the sake of constant
+/// folding.
+static bool isConstantOne(Attribute operand) {
+  if (auto cst = getConstant(operand))
+    return cst->isOne();
+  return false;
+}
+
 /// This is the policy for folding, which depends on the sort of operator we're
 /// processing.
 enum class BinOpKind {
@@ -1659,7 +1667,7 @@ static LogicalResult canonicalizeSingleSetConnect(StrictConnectOp op,
 
   // Ok, we know we are doing the transformation.
 
-  auto replacement = op.getSrc();
+  Value replacement = op.getSrc();
   if (srcValueOp) {
     // Replace with constant zero.
     if (isa<InvalidValueOp>(srcValueOp)) {
@@ -1997,16 +2005,18 @@ static Attribute collectFields(MLIRContext *context,
 OpFoldResult BundleCreateOp::fold(FoldAdaptor adaptor) {
   // bundle_create(%foo["a"], %foo["b"]) -> %foo when the type of %foo is
   // bundle<a:..., b:...>.
-  if (SubfieldOp first = getOperand(0).getDefiningOp<SubfieldOp>())
-    if (first.getFieldIndex() == 0 && first.getInput().getType() == getType() &&
-        llvm::all_of(
-            llvm::drop_begin(llvm::enumerate(getOperands().drop_front())),
-            [&](auto elem) {
-              auto subindex = elem.value().template getDefiningOp<SubfieldOp>();
-              return subindex && subindex.getInput() == first.getInput() &&
-                     subindex.getFieldIndex() == elem.index();
-            }))
-      return first.getInput();
+  if (getNumOperands() > 0)
+    if (SubfieldOp first = getOperand(0).getDefiningOp<SubfieldOp>())
+      if (first.getFieldIndex() == 0 &&
+          first.getInput().getType() == getType() &&
+          llvm::all_of(
+              llvm::drop_begin(llvm::enumerate(getOperands())), [&](auto elem) {
+                auto subindex =
+                    elem.value().template getDefiningOp<SubfieldOp>();
+                return subindex && subindex.getInput() == first.getInput() &&
+                       subindex.getFieldIndex() == elem.index();
+              }))
+        return first.getInput();
 
   return collectFields(getContext(), adaptor.getOperands());
 }
@@ -2014,21 +2024,29 @@ OpFoldResult BundleCreateOp::fold(FoldAdaptor adaptor) {
 OpFoldResult VectorCreateOp::fold(FoldAdaptor adaptor) {
   // vector_create(%foo[0], %foo[1]) -> %foo when the type of %foo is
   // vector<..., 2>.
-  if (SubindexOp first = getOperand(0).getDefiningOp<SubindexOp>())
-    if (first.getIndex() == 0 && first.getInput().getType() == getType() &&
-        llvm::all_of(
-            llvm::drop_begin(llvm::enumerate(getOperands())), [&](auto elem) {
-              auto subindex = elem.value().template getDefiningOp<SubindexOp>();
-              return subindex && subindex.getInput() == first.getInput() &&
-                     subindex.getIndex() == elem.index();
-            }))
-      return first.getInput();
+  if (getNumOperands() > 0)
+    if (SubindexOp first = getOperand(0).getDefiningOp<SubindexOp>())
+      if (first.getIndex() == 0 && first.getInput().getType() == getType() &&
+          llvm::all_of(
+              llvm::drop_begin(llvm::enumerate(getOperands())), [&](auto elem) {
+                auto subindex =
+                    elem.value().template getDefiningOp<SubindexOp>();
+                return subindex && subindex.getInput() == first.getInput() &&
+                       subindex.getIndex() == elem.index();
+              }))
+        return first.getInput();
 
   return collectFields(getContext(), adaptor.getOperands());
 }
 
 OpFoldResult UninferredResetCastOp::fold(FoldAdaptor adaptor) {
   if (getOperand().getType() == getType())
+    return getOperand();
+  return {};
+}
+
+OpFoldResult UninferredWidthCastOp::fold(FoldAdaptor adaptor) {
+  if (getOperand().getType() == getType() && !getType().hasUninferredWidth())
     return getOperand();
   return {};
 }
@@ -2432,30 +2450,42 @@ struct FoldReadWritePorts : public mlir::RewritePattern {
       auto result = mem.getResult(i);
       auto newResult = newOp.getResult(i);
       if (deadReads[i]) {
-        // Create a wire to replace the old result. Wire the sub-fields of the
-        // old result to the relevant sub-fields of the write port.
-        auto wire = rewriter.create<WireOp>(result.getLoc(), result.getType())
-                        .getResult();
-        result.replaceAllUsesWith(wire);
+        auto resultPortTy = result.getType().cast<BundleType>();
 
-        auto connect = [&](Value to, StringRef toName, Value from,
-                           StringRef fromName) {
-          auto toField = rewriter.create<SubfieldOp>(to.getLoc(), to, toName);
-          auto fromField =
-              rewriter.create<SubfieldOp>(from.getLoc(), from, fromName);
-          rewriter.create<StrictConnectOp>(result.getLoc(), toField, fromField);
+        // Rewrite accesses to the old port field to accesses to a
+        // corresponding field of the new port.
+        auto replace = [&](StringRef toName, StringRef fromName) {
+          auto fromFieldIndex = resultPortTy.getElementIndex(fromName);
+          assert(fromFieldIndex && "missing enable flag on memory port");
+
+          auto toField = rewriter.create<SubfieldOp>(newResult.getLoc(),
+                                                     newResult, toName);
+          for (auto *op : llvm::make_early_inc_range(result.getUsers())) {
+            auto fromField = cast<SubfieldOp>(op);
+            if (fromFieldIndex != fromField.getFieldIndex())
+              continue;
+            rewriter.replaceOp(fromField, toField.getResult());
+          }
         };
 
-        connect(newResult, "addr", wire, "addr");
-        connect(newResult, "en", wire, "en");
-        connect(newResult, "clk", wire, "clk");
-        connect(newResult, "data", wire, "wdata");
-        connect(newResult, "mask", wire, "wmask");
+        replace("addr", "addr");
+        replace("en", "en");
+        replace("clk", "clk");
+        replace("data", "wdata");
+        replace("mask", "wmask");
+
+        // Remove the wmode field, replacing it with dummy wires.
+        auto wmodeFieldIndex = resultPortTy.getElementIndex("wmode");
+        for (auto *op : llvm::make_early_inc_range(result.getUsers())) {
+          auto wmodeField = cast<SubfieldOp>(op);
+          if (wmodeFieldIndex != wmodeField.getFieldIndex())
+            continue;
+          rewriter.replaceOpWithNewOp<WireOp>(wmodeField, wmodeField.getType());
+        }
       } else {
         result.replaceAllUsesWith(newResult);
       }
     }
-
     rewriter.eraseOp(op);
     return success();
   }
@@ -2938,7 +2968,8 @@ static LogicalResult foldHiddenReset(RegOp reg, PatternRewriter &rewriter) {
   auto pt = rewriter.saveInsertionPoint();
   rewriter.setInsertionPoint(con);
   auto v = constReg ? (Value)constOp.getResult() : (Value)mux.getLow();
-  replaceOpWithNewOpAndCopyName<ConnectOp>(rewriter, con, con.getDest(), v);
+  replaceOpWithNewOpAndCopyName<StrictConnectOp>(rewriter, con, con.getDest(),
+                                                 v);
   rewriter.restoreInsertionPoint(pt);
   return success();
 }
@@ -3014,5 +3045,43 @@ LogicalResult InvalidValueOp::canonicalize(InvalidValueOp op,
     rewriter.eraseOp(op);
     return success();
   }
+  return failure();
+}
+
+//===----------------------------------------------------------------------===//
+// ClockGateIntrinsicOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult ClockGateIntrinsicOp::fold(FoldAdaptor adaptor) {
+  // Forward the clock if one of the enables is always true.
+  if (isConstantOne(adaptor.getEnable()) ||
+      isConstantOne(adaptor.getTestEnable()))
+    return getInput();
+
+  // Fold to a constant zero clock if the enables are always false.
+  if (isConstantZero(adaptor.getEnable()) &&
+      (!getTestEnable() || isConstantZero(adaptor.getTestEnable())))
+    return BoolAttr::get(getContext(), false);
+
+  // Forward constant zero clocks.
+  if (isConstantZero(adaptor.getInput()))
+    return BoolAttr::get(getContext(), false);
+
+  return {};
+}
+
+LogicalResult ClockGateIntrinsicOp::canonicalize(ClockGateIntrinsicOp op,
+                                                 PatternRewriter &rewriter) {
+  // Remove constant false test enable.
+  if (auto testEnable = op.getTestEnable()) {
+    if (auto constOp = testEnable.getDefiningOp<ConstantOp>()) {
+      if (constOp.getValue().isZero()) {
+        rewriter.updateRootInPlace(op,
+                                   [&] { op.getTestEnableMutable().clear(); });
+        return success();
+      }
+    }
+  }
+
   return failure();
 }

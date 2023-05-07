@@ -385,6 +385,7 @@ void MuxOp::getCanonicalizationPatterns(RewritePatternSet &results,
 LogicalResult
 MuxOp::inferReturnTypes(MLIRContext *context, std::optional<Location> location,
                         ValueRange operands, DictionaryAttr attributes,
+                        mlir::OpaqueProperties properties,
                         mlir::RegionRange regions,
                         SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
   // MuxOp must have at least one data operand (in addition to the select
@@ -833,54 +834,6 @@ std::string handshake::ConditionalBranchOp::getResultName(unsigned int idx) {
 bool ConditionalBranchOp::isControl() {
   return isControlCheckTypeAndOperand(getDataOperand().getType(),
                                       getDataOperand());
-}
-
-ParseResult SelectOp::parse(OpAsmParser &parser, OperationState &result) {
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> allOperands;
-  Type dataType;
-  SmallVector<Type> operandTypes;
-  llvm::SMLoc allOperandLoc = parser.getCurrentLocation();
-  if (parser.parseOperandList(allOperands) ||
-      parser.parseOptionalAttrDict(result.attributes) ||
-      parser.parseColonType(dataType))
-    return failure();
-
-  if (allOperands.size() != 3)
-    return parser.emitError(parser.getCurrentLocation(),
-                            "Expected exactly 3 operands");
-
-  result.addTypes({dataType});
-  operandTypes.push_back(IntegerType::get(parser.getContext(), 1));
-  operandTypes.push_back(dataType);
-  operandTypes.push_back(dataType);
-  if (parser.resolveOperands(allOperands, operandTypes, allOperandLoc,
-                             result.operands))
-    return failure();
-  return success();
-}
-
-void SelectOp::print(OpAsmPrinter &p) {
-  Type type = getTrueOperand().getType();
-  p << " " << getOperands();
-  p.printOptionalAttrDict((*this)->getAttrs());
-  p << " : " << type;
-}
-
-std::string handshake::SelectOp::getOperandName(unsigned int idx) {
-  switch (idx) {
-  case 0:
-    return "sel";
-  case 1:
-    return "true";
-  case 2:
-    return "false";
-  default:
-    llvm_unreachable("Expected exactly 3 operands");
-  }
-}
-
-bool SelectOp::isControl() {
-  return getTrueOperand().getType().isa<NoneType>();
 }
 
 ParseResult SinkOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -1699,7 +1652,8 @@ std::string DynamaticLoadOp::getResultName(unsigned int idx) {
 
 LogicalResult DynamaticLoadOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, mlir::RegionRange regions,
+    DictionaryAttr attributes, mlir::OpaqueProperties properties,
+    mlir::RegionRange regions,
     SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
   auto opTypes = operands.getTypes();
   inferredReturnTypes.insert(inferredReturnTypes.end(), opTypes.begin(),
@@ -1731,7 +1685,8 @@ std::string DynamaticStoreOp::getResultName(unsigned int idx) {
 
 LogicalResult DynamaticStoreOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, mlir::RegionRange regions,
+    DictionaryAttr attributes, mlir::OpaqueProperties properties,
+    mlir::RegionRange regions,
     SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
   auto types = operands.getTypes();
   inferredReturnTypes.append(types.begin(), types.end());
@@ -1742,7 +1697,8 @@ LogicalResult DynamaticStoreOp::inferReturnTypes(
 
 LogicalResult DynamaticReturnOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, mlir::RegionRange regions,
+    DictionaryAttr attributes, mlir::OpaqueProperties properties,
+    mlir::RegionRange regions,
     SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
   auto types = operands.getTypes();
   inferredReturnTypes.append(types.begin(), types.end());

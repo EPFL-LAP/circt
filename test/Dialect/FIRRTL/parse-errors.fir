@@ -50,6 +50,13 @@ FIRRTL version 1.1.0 circuit test :
 
 ;// -----
 
+; expected-error @below {{FIRRTL version must be >=0.2.0}}
+FIRRTL version 0.1.0
+circuit test :
+  module test :
+
+;// -----
+
 circuit test test : ; expected-error {{expected ':' in circuit definition}}
 
 ;// -----
@@ -98,6 +105,7 @@ circuit subfield_of_ground_type :
 
 ;// -----
 
+FIRRTL version 1.2.0
 circuit invalid_name :
   module invalid_name :
    input out_0 : { member : { 0 : { clock : Clock, reset : UInt<1>}}}
@@ -106,6 +114,7 @@ circuit invalid_name :
 
 ;// -----
 
+FIRRTL version 1.2.0
 circuit invalid_name :
   module invalid_name :
    input out_0 : SInt<8>[5]
@@ -138,6 +147,7 @@ circuit invalid_int_literal :
 
 ;// -----
 ; When scopes are local to the body
+FIRRTL version 1.2.0
 circuit invalid_name :
   module invalid_name :
     input reset : UInt<1>
@@ -460,6 +470,25 @@ circuit RefNotString:
 
 ;// -----
 
+circuit ConnectWrongType:
+  module ConnectWrongType:
+    input a: UInt<1>
+    output b: SInt<1>
+
+    b <= a ; expected-error {{cannot connect non-equivalent type}}
+
+;// -----
+
+FIRRTL version 3.0.0
+circuit ConnectAlternateWrongType:
+  module ConnectAlternateWrongType:
+    input a: UInt<1>
+    output b: SInt<1>
+
+    connect b, a ; expected-error {{cannot connect non-equivalent type}}
+
+;// -----
+
 circuit ProbeConnect:
   module ProbeConnect:
     input in : UInt<1>
@@ -469,6 +498,17 @@ circuit ProbeConnect:
 
 ;// -----
 
+FIRRTL version 3.0.0
+circuit ProbeConnectAlternate:
+  module ProbeConnectAlternate:
+    input in : UInt<1>
+    output p : Probe<UInt<1>>
+
+    connect p, probe(in) ; expected-error {{cannot connect reference types}}
+
+;// -----
+
+FIRRTL version 1.2.0
 circuit ProbePartialConnect:
   module ProbePartialConnect:
     input in : UInt<1>
@@ -550,3 +590,28 @@ circuit ForceWithLiteral:
     node n = in
     force_initial(rwprobe(n), 1) ; expected-error {{expected source expression in force_initial}}
 
+;// -----
+
+FIRRTL version 2.0.0
+circuit PartialConnect_v2p0p0:
+  module PartialConnect_v2p0p0:
+    input a: UInt<1>
+    output b: UInt<1>
+
+    b <- a ; expected-error {{unexpected token '<-' in statement}}
+
+;// -----
+
+FIRRTL version 2.0.0
+circuit RegReset_v2p0p0:
+  module RegReset_v2p0p0:
+    input clock: Clock
+
+    ; expected-error @below {{use of unknown declaration 'regreset'}}
+    regreset a: UInt<1>, clock, UInt<1>(0), UInt<1>(0)
+
+;// -----
+FIRRTL version 3.0.0
+circuit IllegalLiteral:
+  module IllegalLiteral:
+    input `b: UInt<1> ; expected-error {{unterminated literal identifier}}

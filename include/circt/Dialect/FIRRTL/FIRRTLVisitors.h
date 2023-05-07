@@ -31,11 +31,14 @@ public:
         // Basic Expressions
         .template Case<
             ConstantOp, SpecialConstantOp, AggregateConstantOp, InvalidValueOp,
-            SubfieldOp, SubindexOp, SubaccessOp, SubtagOp, BundleCreateOp,
-            VectorCreateOp, MultibitMuxOp, TagExtractOp,
+            SubfieldOp, SubindexOp, SubaccessOp, IsTagOp, SubtagOp,
+            BundleCreateOp, VectorCreateOp, FEnumCreateOp, MultibitMuxOp,
+            TagExtractOp, OpenSubfieldOp, OpenSubindexOp,
             // Arithmetic and Logical Binary Primitives.
             AddPrimOp, SubPrimOp, MulPrimOp, DivPrimOp, RemPrimOp, AndPrimOp,
             OrPrimOp, XorPrimOp,
+            // Elementwise operations,
+            ElementwiseOrPrimOp, ElementwiseAndPrimOp, ElementwiseXorPrimOp,
             // Comparisons.
             LEQPrimOp, LTPrimOp, GEQPrimOp, GTPrimOp, EQPrimOp, NEQPrimOp,
             // Misc Binary Primitives.
@@ -49,10 +52,12 @@ public:
             // Miscellaneous.
             BitsPrimOp, HeadPrimOp, MuxPrimOp, PadPrimOp, ShlPrimOp, ShrPrimOp,
             TailPrimOp, VerbatimExprOp, HWStructCastOp, BitCastOp, RefSendOp,
-            RefResolveOp, RefSubOp, mlir::UnrealizedConversionCastOp>(
-            [&](auto expr) -> ResultType {
-              return thisCast->visitExpr(expr, args...);
-            })
+            RefResolveOp, RefSubOp,
+            // Casts to deal with weird stuff
+            UninferredResetCastOp, UninferredWidthCastOp,
+            mlir::UnrealizedConversionCastOp>([&](auto expr) -> ResultType {
+          return thisCast->visitExpr(expr, args...);
+        })
         .Default([&](auto expr) -> ResultType {
           return thisCast->visitInvalidExpr(op, args...);
         });
@@ -94,12 +99,16 @@ public:
   HANDLE(AggregateConstantOp, Unhandled);
   HANDLE(BundleCreateOp, Unhandled);
   HANDLE(VectorCreateOp, Unhandled);
+  HANDLE(FEnumCreateOp, Unhandled);
   HANDLE(SubfieldOp, Unhandled);
   HANDLE(SubindexOp, Unhandled);
   HANDLE(SubaccessOp, Unhandled);
+  HANDLE(IsTagOp, Unhandled);
   HANDLE(SubtagOp, Unhandled);
   HANDLE(TagExtractOp, Unhandled);
   HANDLE(MultibitMuxOp, Unhandled);
+  HANDLE(OpenSubfieldOp, Unhandled);
+  HANDLE(OpenSubindexOp, Unhandled);
 
   // Arithmetic and Logical Binary Primitives.
   HANDLE(AddPrimOp, Binary);
@@ -137,6 +146,10 @@ public:
   HANDLE(OrRPrimOp, Unary);
   HANDLE(XorRPrimOp, Unary);
 
+  HANDLE(ElementwiseOrPrimOp, Unhandled);
+  HANDLE(ElementwiseAndPrimOp, Unhandled);
+  HANDLE(ElementwiseXorPrimOp, Unhandled);
+
   // Intrinsic Expr.
   HANDLE(IsXIntrinsicOp, Unhandled);
   HANDLE(PlusArgsValueIntrinsicOp, Unhandled);
@@ -159,6 +172,8 @@ public:
 
   // Conversions.
   HANDLE(HWStructCastOp, Unhandled);
+  HANDLE(UninferredResetCastOp, Unhandled);
+  HANDLE(UninferredWidthCastOp, Unhandled);
   HANDLE(mlir::UnrealizedConversionCastOp, Unhandled);
   HANDLE(BitCastOp, Unhandled);
 #undef HANDLE

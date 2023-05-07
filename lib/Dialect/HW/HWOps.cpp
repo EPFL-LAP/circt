@@ -2244,9 +2244,38 @@ void EnumConstantOp::getAsmResultNames(
   setNameFn(getResult(), getField().getField().str());
 }
 
+void EnumConstantOp::build(OpBuilder &builder, OperationState &odsState,
+                           EnumFieldAttr field) {
+  return build(builder, odsState, field.getType().getValue(), field);
+}
+
 OpFoldResult EnumConstantOp::fold(FoldAdaptor adaptor) {
   assert(adaptor.getOperands().empty() && "constant has no operands");
   return getFieldAttr();
+}
+
+LogicalResult EnumConstantOp::verify() {
+  auto fieldAttr = getFieldAttr();
+  auto fieldType = fieldAttr.getType().getValue();
+  // This check ensures that we are using the exact same type, without looking
+  // through type aliases.
+  if (fieldType != getType())
+    emitOpError("return type ")
+        << getType() << " does not match attribute type " << fieldAttr;
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// EnumCmpOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult EnumCmpOp::verify() {
+  // Compare the canonical types.
+  auto lhsType = type_cast<EnumType>(getLhs().getType());
+  auto rhsType = type_cast<EnumType>(getRhs().getType());
+  if (rhsType != lhsType)
+    emitOpError("types do not match");
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -2642,12 +2671,10 @@ void UnionExtractOp::print(OpAsmPrinter &printer) {
   printExtractOp(printer, *this);
 }
 
-LogicalResult UnionExtractOp::inferReturnTypes(MLIRContext *context,
-                                               std::optional<Location> loc,
-                                               ValueRange operands,
-                                               DictionaryAttr attrs,
-                                               mlir::RegionRange regions,
-                                               SmallVectorImpl<Type> &results) {
+LogicalResult UnionExtractOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> loc, ValueRange operands,
+    DictionaryAttr attrs, mlir::OpaqueProperties properties,
+    mlir::RegionRange regions, SmallVectorImpl<Type> &results) {
   results.push_back(cast<UnionType>(getCanonicalType(operands[0].getType()))
                         .getFieldType(attrs.getAs<StringAttr>("field")));
   return success();

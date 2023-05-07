@@ -96,6 +96,10 @@ def DefineOp : ArcOp<"define", [
                            "' attribute of function type";
       return mlir::success();
     }
+
+    /// Returns true if the arc returns the inputs directly and in the same
+    /// order, otherwise false.
+    bool isPassthrough();
   }];
 }
 
@@ -374,6 +378,7 @@ def ClockDomainOp : ArcOp<"clock_domain", [
   }];
 
   let hasRegionVerifier = 1;
+  let hasCanonicalizeMethod = 1;
 }
 
 def ClockTreeOp : ArcOp<"clock_tree", [NoTerminator, NoRegionArguments]> {
