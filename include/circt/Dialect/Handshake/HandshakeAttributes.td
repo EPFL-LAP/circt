@@ -17,12 +17,16 @@ class Handshake_Attr<string name, string attrMnemonic, list<Trait> traits = []>
   let mnemonic = attrMnemonic;
 }
 
+//===----------------------------------------------------------------------===//
+// Memory interface attributes
+//===----------------------------------------------------------------------===//
+
 // Define an enumeration (along with a corresponding attribute) made up of two
 // possible cases to represent the type (load or store) of a memory access.  
 def AccessCaseLoad: I32EnumAttrCase<"Load", 0>;
 def AccessCaseStore: I32EnumAttrCase<"Store", 1>;
 def AccessTypeEnum: I32EnumAttr<
-  "AccessTypeEnum", "Models a load or a store operation", [AccessCaseLoad, AccessCaseStore]> {
+  "AccessTypeEnum", "Models a load or a store memory access", [AccessCaseLoad, AccessCaseStore]> {
   let genSpecializedAttr = 0;
 }
 def AccessTypeEnumAttr: EnumAttr<Handshake_Dialect, AccessTypeEnum, "AccessType">;
@@ -34,6 +38,33 @@ def BlockAccessesAttr : TypedArrayAttrBase<AccessTypeEnumAttr, "Array of memory 
 // Represents memory accesses (in program order) to a memory region made from
 // multiple blocks (i.e., a function).
 def FuncAccessesAttr : TypedArrayAttrBase<BlockAccessesAttr, "Array of array of memory operation">;
+
+def LSQBlockAttr : Handshake_Attr<"LSQBlock", "lsq_block"> {
+  let summary = "TODO";
+  let description = [{
+    TODO
+  }];
+  
+  let parameters = (ins ArrayRefParameter<"AccessTypeEnum">:$accesses);
+  let hasCustomAssemblyFormat = 1;
+  let genVerifyDecl = 1;
+}
+
+def LSQBlocksAttr : Handshake_Attr<"LSQBlocks", "lsq_blocks"> {
+  let summary = "TODO";
+  let description = [{
+    TODO
+  }];
+  
+  let parameters = (ins ArrayRefParameter<"::circt::handshake::LSQBlockAttr">:$blocks);
+  let assemblyFormat = "`[` $blocks `]`";
+  let genVerifyDecl = 1;
+}
+
+
+//===----------------------------------------------------------------------===//
+// Memory analysis attributes
+//===----------------------------------------------------------------------===//
 
 def MemAccessNameAttr : Handshake_Attr<"MemAccessName", "access_name"> {
   let summary = "A unique name given to a memory access";

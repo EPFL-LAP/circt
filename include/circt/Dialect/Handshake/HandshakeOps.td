@@ -967,6 +967,37 @@ def MemoryControllerOp : Handshake_Op<"mem_controller", [
   }];
 }
 
+def LSQOp : Handshake_Op<"lsq", [
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
+]> {
+  let summary = "LSQ (dynamatic)";
+  let description = [{
+    TODO
+  }];
+  let arguments = (ins AnyMemRef : $memref,
+                       Variadic<AnyType> : $inputs,
+                       LSQBlocksAttr : $blocks,
+                       I32Attr : $id);
+  let results = (outs Variadic<AnyType> : $ldData, NoneType : $done);
+
+  let skipDefaultBuilders = 1;
+  let builders = [OpBuilder<(
+      ins "Value":$memref, 
+      "ArrayRef<::std::pair<Value, ArrayRef<Operation*>>>":$accesses, 
+      "int":$id)>
+  ];
+  let hasVerifier = 1;
+  let assemblyFormat = " `[` $memref `:` qualified(type($memref)) `]` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)";
+
+  let extraClassDeclaration = [{
+    /// Returns the type of the memref referenced by the memory interface.
+    mlir::MemRefType getMemRefType() {
+      return getMemref().getType().cast<mlir::MemRefType>();
+    }
+  }];
+}
+
 def DynamaticLoadOp : Handshake_Op<"d_load", [
   DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>,
@@ -1000,7 +1031,6 @@ def DynamaticLoadOp : Handshake_Op<"d_load", [
   let skipDefaultBuilders = 1;
   let builders = [OpBuilder<(ins "Value":$memref, "Value":$address)>];
   let assemblyFormat = " `[` $address `]` $data attr-dict `:` qualified(type($address)) `,` qualified(type($data)) ";
-
 }
 
 def DynamaticStoreOp : Handshake_Op<"d_store", [
