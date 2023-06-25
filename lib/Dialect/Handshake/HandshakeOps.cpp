@@ -1470,11 +1470,12 @@ static ParseResult parseDynamaticMemoryAccessOp(OpAsmParser &parser,
 
   if (parser.parseLSquare() || parser.parseOperandList(addressOperands) ||
       parser.parseRSquare() || parser.parseOperandList(remainingOperands) ||
-      parser.parseColon() || parser.parseTypeList(parsedTypes))
+      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon() ||
+      parser.parseTypeList(parsedTypes))
     return failure();
 
   // The last type will be the data type of the operation; the prior will be the
-  // address types.
+  // address types
   Type dataType = parsedTypes.back();
   auto parsedTypesRef = ArrayRef(parsedTypes);
   result.addTypes(dataType);
@@ -1489,21 +1490,20 @@ static ParseResult parseDynamaticMemoryAccessOp(OpAsmParser &parser,
 }
 
 template <typename MemOp>
-static void printDynamaticMemoryAccessOp(OpAsmPrinter &p, MemOp op) {
-  p << " [";
-  p << op.getAddresses();
-  p << "] " << op.getData() << " : ";
-  llvm::interleaveComma(op.getAddresses(), p,
-                        [&](Value v) { p << v.getType(); });
-  p << ", " << op.getData().getType();
+static void printDynamaticMemoryAccessOp(OpAsmPrinter &printer, MemOp op) {
+  printer << " [" << op.getAddresses() << "] " << op.getData();
+  printer.printOptionalAttrDict(op->getAttrs());
+  printer << " : ";
+  llvm::interleaveComma(op.getAddresses(), printer,
+                        [&](Value v) { printer << v.getType(); });
+  printer << ", " << op.getData().getType();
 }
 
 // MemoryControllerOp
 
 void MemoryControllerOp::build(OpBuilder &builder, OperationState &result,
                                Value memref, ValueRange inputs, int bbCount,
-                               int ldCount, int stCount, bool isExternal,
-                               int id) {
+                               int ldCount, int stCount, int id) {
 
   // Memory operands
   result.addOperands(memref);
