@@ -1461,53 +1461,29 @@ LogicalResult ReturnOp::verify() {
 // Dynamatic operations
 //===----------------------------------------------------------------------===//
 
-static ParseResult parseDynamaticMemoryAccessOp(OpAsmParser &parser,
-                                                OperationState &result) {
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> addressOperands,
-      remainingOperands, allOperands;
-  SmallVector<Type, 1> parsedTypes, allTypes;
-  llvm::SMLoc allOperandLoc = parser.getCurrentLocation();
-
-  if (parser.parseLSquare() || parser.parseOperandList(addressOperands) ||
-      parser.parseRSquare() || parser.parseOperandList(remainingOperands) ||
-      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon() ||
-      parser.parseTypeList(parsedTypes))
-    return failure();
-
-  // The last type will be the data type of the operation; the prior will be the
-  // address types
-  Type dataType = parsedTypes.back();
-  auto parsedTypesRef = ArrayRef(parsedTypes);
-  result.addTypes(dataType);
-  result.addTypes(parsedTypesRef.drop_back());
-  allOperands.append(addressOperands);
-  allOperands.append(remainingOperands);
-  allTypes.append(parsedTypes);
-  if (parser.resolveOperands(allOperands, allTypes, allOperandLoc,
-                             result.operands))
-    return failure();
-  return success();
-}
-
-template <typename MemOp>
-static void printDynamaticMemoryAccessOp(OpAsmPrinter &printer, MemOp op) {
-  printer << " [" << op.getAddresses() << "] " << op.getData();
-  printer.printOptionalAttrDict(op->getAttrs());
-  printer << " : ";
-  llvm::interleaveComma(op.getAddresses(), printer,
-                        [&](Value v) { printer << v.getType(); });
-  printer << ", " << op.getData().getType();
-}
-
 // MemoryControllerOp
 
-void MemoryControllerOp::build(OpBuilder &builder, OperationState &result,
-                               Value memref, ValueRange inputs, int bbCount,
-                               int ldCount, int stCount, int id) {
-
+void MemoryControllerOp::build(
+    OpBuilder &builder, OperationState &result, Value memref, ValueRange inputs,
+    SmallVector<SmallVector<AccessTypeEnum>> &accesses, int id) {
   // Memory operands
   result.addOperands(memref);
   result.addOperands(inputs);
+
+  // Convert the list of memory accesses to a list of attributes, and count the
+  // total number of loads in the process
+  unsigned ldCount = 0;
+  SmallVector<Attribute> accessesAttr;
+  for (auto &blockAccesses : accesses) {
+    SmallVector<Attribute> blockAccessesAttr;
+    for (auto &op : blockAccesses) {
+      if (op == AccessTypeEnum::Load)
+        ldCount++;
+      blockAccessesAttr.push_back(
+          AccessTypeEnumAttr::get(builder.getContext(), op));
+    }
+    accessesAttr.push_back(builder.getArrayAttr(blockAccessesAttr));
+  }
 
   // Data outputs (get their type from memref)
   auto memrefType = memref.getType().cast<MemRefType>();
@@ -1516,11 +1492,36 @@ void MemoryControllerOp::build(OpBuilder &builder, OperationState &result,
 
   // Memory interface attributes
   Type i32Type = builder.getIntegerType(32);
-  result.addAttribute("bbCount", builder.getIntegerAttr(i32Type, bbCount));
-  result.addAttribute("ldCount", builder.getIntegerAttr(i32Type, ldCount));
-  result.addAttribute("stCount", builder.getIntegerAttr(i32Type, stCount));
-  result.addAttribute("isExternal", builder.getBoolAttr(isExternal));
+  result.addAttribute("accesses", builder.getArrayAttr(accessesAttr));
   result.addAttribute("id", builder.getIntegerAttr(i32Type, id));
+}
+
+LogicalResult MemoryControllerOp::verify() {
+  // Number of data results must match total number of loads
+  if (getLdData().size() != getLdCount())
+    return emitOpError() << "Number of data results (" << getLdData().size()
+                         << ") must match total number of load operations ("
+                         << getLdCount() << ")";
+
+  auto isStoreOp = [](mlir::Attribute memOp) {
+    return cast<AccessTypeEnumAttr>(memOp).getValue() == AccessTypeEnum::Store;
+  };
+
+  // Compute number of inputs that are expected based on the set of memory
+  // accesses
+  unsigned numExpectedInputs = getLdCount() + getStCount() * 2;
+  for (auto &blockAccesses : getAccesses())
+    if (llvm::any_of(cast<mlir::ArrayAttr>(blockAccesses), isStoreOp))
+      numExpectedInputs++;
+
+  // Number of inputs must be consistent with set of memory accesses
+  if (numExpectedInputs != getInputs().size())
+    return emitError() << "Incorrect number of inputs with respect to "
+                          "registered memory operations, expected "
+                       << numExpectedInputs << " but got "
+                       << getInputs().size();
+
+  return success();
 }
 
 std::string MemoryControllerOp::getOperandName(unsigned int idx) {
@@ -1537,96 +1538,64 @@ std::string MemoryControllerOp::getResultName(unsigned int idx) {
 // DynamaticLoadOp
 
 void DynamaticLoadOp::build(OpBuilder &builder, OperationState &result,
-                            Value memref, ValueRange indices) {
-  // Address indices
-  result.addOperands(indices);
+                            Value memref, Value address) {
+  // Address (data value will be added later in the elastic pass)
+  result.addOperands(address);
 
-  // Data type
+  // Data and address outputs
   auto memrefType = memref.getType().cast<MemRefType>();
-
-  // Data output (from load to successor ops)
+  result.types.push_back(address.getType());
   result.types.push_back(memrefType.getElementType());
-
-  // Address outputs (to memory)
-  result.types.append(indices.size(), builder.getIndexType());
 }
-
-ParseResult DynamaticLoadOp::parse(OpAsmParser &parser,
-                                   OperationState &result) {
-  return parseDynamaticMemoryAccessOp(parser, result);
-}
-
-void DynamaticLoadOp::print(OpAsmPrinter &p) {
-  printDynamaticMemoryAccessOp(p, *this);
-}
-
-LogicalResult DynamaticLoadOp::verify() { return verifyMemoryAccessOp(*this); }
 
 std::string DynamaticLoadOp::getOperandName(unsigned int idx) {
-  unsigned nAddresses = getAddresses().size();
-  std::string opName;
-  if (idx < nAddresses)
-    opName = "addrIn" + std::to_string(idx);
-  else if (idx == nAddresses)
-    opName = "dataFromMem";
-  return opName;
+  return (idx == 0) ? "addrIn" : "dataFromMem";
 }
 
 std::string DynamaticLoadOp::getResultName(unsigned int idx) {
-  std::string resName;
-  if (idx == 0)
-    resName = "dataOut";
-  else
-    resName = "addrOut" + std::to_string(idx - 1);
-  return resName;
+  return (idx == 0) ? "addrOut" : "dataOut";
+}
+
+LogicalResult DynamaticLoadOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, mlir::RegionRange regions,
+    SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
+  auto opTypes = operands.getTypes();
+  inferredReturnTypes.insert(inferredReturnTypes.end(), opTypes.begin(),
+                             opTypes.end());
+  return success();
 }
 
 // DynamaticStoreOp
 
 void DynamaticStoreOp::build(OpBuilder &builder, OperationState &result,
-                             Value valueToStore, ValueRange indices) {
+                             Value valueToStore, Value address) {
 
-  // Address indices
-  result.addOperands(indices);
-
-  // Data
+  // Operands (address + data)
+  result.addOperands(address);
   result.addOperands(valueToStore);
 
-  // Data output (from store to memory)
+  // Results (address + data)
+  result.types.push_back(address.getType());
   result.types.push_back(valueToStore.getType());
-
-  // Address outputs (from store to memory)
-  result.types.append(indices.size(), builder.getIndexType());
 }
-
-ParseResult DynamaticStoreOp::parse(OpAsmParser &parser,
-                                    OperationState &result) {
-  return parseDynamaticMemoryAccessOp(parser, result);
-}
-
-void DynamaticStoreOp::print(OpAsmPrinter &p) {
-  return printDynamaticMemoryAccessOp(p, *this);
-}
-
-LogicalResult DynamaticStoreOp::verify() { return verifyMemoryAccessOp(*this); }
 
 std::string DynamaticStoreOp::getOperandName(unsigned int idx) {
-  unsigned nAddresses = getAddresses().size();
-  std::string opName;
-  if (idx < nAddresses)
-    opName = "addrIn" + std::to_string(idx);
-  else if (idx == nAddresses)
-    opName = "dataIn";
-  return opName;
+  return (idx == 0) ? "addrIn" : "dataIn";
 }
 
 std::string DynamaticStoreOp::getResultName(unsigned int idx) {
-  std::string resName;
-  if (idx == 0)
-    resName = "dataToMem";
-  else
-    resName = "addrOut" + std::to_string(idx - 1);
-  return resName;
+  return (idx == 0) ? "addrOut" : "dataToMem";
+}
+
+LogicalResult DynamaticStoreOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, mlir::RegionRange regions,
+    SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
+  auto opTypes = operands.getTypes();
+  inferredReturnTypes.insert(inferredReturnTypes.end(), opTypes.begin(),
+                             opTypes.end());
+  return success();
 }
 
 // DynamaticReturnOp

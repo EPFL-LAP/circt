@@ -825,6 +825,24 @@ def PackOp : Handshake_Op<"pack", [
 // Dynamatic operations
 //===----------------------------------------------------------------------===//
 
+// Define an enumeration (along with a corresponding attribute) made up of two
+// possible cases to represent the type (load or store) of a memory access.  
+def AccessCaseLoad: I32EnumAttrCase<"Load", 0>;
+def AccessCaseStore: I32EnumAttrCase<"Store", 1>;
+def AccessTypeEnum: I32EnumAttr<
+  "AccessTypeEnum", "Models a load or a store operation", [AccessCaseLoad, AccessCaseStore]> {
+  let genSpecializedAttr = 0;
+}
+def AccessTypeEnumAttr: EnumAttr<Handshake_Dialect, AccessTypeEnum, "AccessType">;
+
+// Represents memory accesses (in program order) to a memory region made from
+// within a single block.
+def BlockAccessesAttr : TypedArrayAttrBase<AccessTypeEnumAttr, "Array of memory operations">;
+
+// Represents memory accesses (in program order) to a memory region made from
+// multiple blocks (i.e., a function).
+def FuncAccessesAttr : TypedArrayAttrBase<BlockAccessesAttr, "Array of array of memory operation">;
+
 def MemoryControllerOp : Handshake_Op<"mem_controller", [
   DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
@@ -841,16 +859,22 @@ def MemoryControllerOp : Handshake_Op<"mem_controller", [
     value (data) for each load request as well as a control signal to indicate
     basic block completion to the enclosing function's end operation.
 
-    The operation also stores attrbutes to indicate the number of basic blocks
-    containing store operations referencing the wrapped memref (bbCount), the
-    total number of stores (stCount), the total number of loads (ldCount), and
-    a unique ID identifying the interface (id).
+    The operation also contains an attribute (memOps) specifying the set of
+    memory operations on the referenced memory region. Each element in the
+    top-level list of attributes is itself an attribute list whose elements
+    identify load and store operations performed within a single basic block,
+    in program order. The total number of basic blocks, load operations, and
+    store operations referencing the memory region can be derived from this
+    attribute.
+
+    Finally, the operation contains a unique ID identifying the interface (id).
 
     The order of operands is
     1. Wrapped memref
-    2. Constants from basic blocks storing to the memory region (bb1, bb2, ...),
-      in program order
-    3. Load/Store access requests, in program order (i.e., in basic block order)
+    2. For each basic block referencing the memory region:
+      a. Control signal fed through a constant indicating the number of store
+      operations in the block (if there is at least one store in the block)
+      b. Load/Store access requests from within the block, in program order
 
     The order of results is
     1. Load results, in program order (i.e., in load access requests order)
@@ -858,100 +882,130 @@ def MemoryControllerOp : Handshake_Op<"mem_controller", [
 
     Example:
     ```mlir
-    %ldData1, %ldData2, %ctrl = [bb = 2, ld = 2, st = 2] mem_controller (%mem : memref<16xi32>) (%bb1, %bb2, %stAddr1, %stData1, %ldAddr1, %ldAddr2, %stAddr2, %stData2) : (index, i32, index, index, index, i32) -> (i32, i32, none)
+    %ldData1, %ldData2, %ctrl = mem_controller [%mem : memref<16xi32>]
+      (%bb1, %stAddr1, %stData1, %ldAddr1, %ldAddr2, %bb3, %stAddr2, %stData2) :
+      {accesses = [
+        [#handshake<AccessType Store>, #handshake<AccessType Load>], 
+        [#handshake<AccessType Load>],
+        [#handshake<AccessType Store>],
+      ], id = 0 : i32}
+      (i32, index, i32, index, index, i32, index, i32) -> (i32, i32, none)
     ```
   }];
-
+  
   let arguments = (ins AnyMemRef:$memref,
                        Variadic<AnyType>:$inputs,
-                       I32Attr : $bbCount,
-                       I32Attr : $ldCount,
-                       I32Attr : $stCount,
-                       BoolAttr : $isExternal,
+                       FuncAccessesAttr:$accesses,
                        I32Attr : $id);
-  let results = (outs Variadic<AnyType>:$outputs, NoneType:$done);
+  let results = (outs Variadic<AnyType>:$ldData, NoneType:$done);
 
   let skipDefaultBuilders = 1;
   let builders = [OpBuilder<(
-      ins "Value":$memref, "ValueRange":$inputs, "int":$bbCount, 
-      "int":$ldCount, "int":$stCount, "int":$id)>
+      ins "Value":$memref, "ValueRange":$inputs, 
+      "SmallVector<SmallVector<AccessTypeEnum>>&":$accesses, "int":$id)>
   ];
-  let assemblyFormat = " `[` `bb` `=` $bbCount `,` `ld` `=` $ldCount `,` `st` `=` $stCount `]` `(` $memref `:` qualified(type($memref)) `)` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)";
+  let hasVerifier = 1;
+  let assemblyFormat = " `[` $memref `:` qualified(type($memref)) `]` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)";
 
   let extraClassDeclaration = [{
     mlir::MemRefType getMemRefType() {
       return getMemref().getType().cast<mlir::MemRefType>();
     }
+
+    unsigned getBBCount() {
+      return getAccesses().size();
+    }
+
+    unsigned getAccessTypeCount(AccessTypeEnum accType) {
+      unsigned count = 0;
+      ArrayAttr accesses = getAccesses();
+      for (auto &blockAccesses : accesses)
+        for (auto &access : cast<mlir::ArrayAttr>(blockAccesses))
+          if (cast<circt::handshake::AccessTypeEnumAttr>(access).getValue() == accType)
+            count++;
+      return count;
+    }
+
+    unsigned getLdCount() {
+      return circt::handshake::MemoryControllerOp::getAccessTypeCount(AccessTypeEnum::Load);
+    }
+
+    unsigned getStCount() {
+      return circt::handshake::MemoryControllerOp::getAccessTypeCount(AccessTypeEnum::Store);
+    }
+
   }];
 }
 
+
 def DynamaticLoadOp : Handshake_Op<"d_load", [
   DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
-  DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>,
+  DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>
 ]> {
   let summary = "load operation (dynamatic)";
   let description = [{
     Represents a load memory port which sends load requests to a memory
-    interface. It receives address indices from dataflow predecessors and a data
+    interface. It receives an address from a dataflow predecessor and a data
     value from the memory interface that eventually holds the loaded data. It
-    returns address indices that are sent to the memory interface as well as a
-    data value that is sent to its dataflow successor.
+    returns an address that is sent to the memory interface as well as a data
+    value that is sent to its dataflow successor.
 
     The order of operands is
-    1. address indices (from predecessors)
+    1. address (from predecessor)
     2. data value (from memory interface)
 
     The order of results is
-    1. data value (to successor)
-    2. address indices (to memory interface).
+    1. address (to memory interface).
+    2. data value (to successor)
 
     Example:
     ```mlir
-    %dataToSucc, %addrToMem = d_load [%addr] %dataFromMem : index, i32
+    %dataToSucc, %addrToMem = d_load [%addr] %dataFromMem : i32, index
     ```
   }];
 
-  let arguments = (ins Variadic<AnyType>:$addresses, AnyType:$data);
-  let results = (outs AnyType:$dataResult, Variadic<AnyType>:$addressResults);
+  let arguments = (ins AnyType:$address, AnyType:$data);
+  let results = (outs AnyType:$addressResult, AnyType:$dataResult);
+
   let skipDefaultBuilders = 1;
-  let builders = [OpBuilder<(ins "Value":$memref, "ValueRange":$indices)>];
-  let hasCustomAssemblyFormat = 1;
-  let hasVerifier = 1;
+  let builders = [OpBuilder<(ins "Value":$memref, "Value":$address)>];
+  let assemblyFormat = " `[` $address `]` $data attr-dict `:` qualified(type($address)) `,` qualified(type($data)) ";
+
 }
 
 def DynamaticStoreOp : Handshake_Op<"d_store", [
   DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
-  DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>,
+  DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>
 ]> {
   let summary = "store operation (dynamatic)";
   let description = [{
     Represents a store memory port which sends store requests to a memory
-    interface. It receives address indices and a data value to store in memory
-    from its dataflow predecessors. It returns the value to store and address
-    indices, all of which are sent to the memory interface.
+    interface. It receives an address and a data value to store in memory from
+    its dataflow predecessors. It returns the value to store and an address,
+    both of which are sent to the memory interface.
 
     The order of operands is
-    1. address indices (from predecessors)
+    1. address (from predecessor)
     2. data value (from predecessor)
 
     The order of results is
-    1. data value (to memory interface)
-    2. address indices (to memory interface).
+    1. address (to memory interface).
+    2. data value (to memory interface)
 
     Example:
     ```mlir
-    %dataToMem, %addrToMem = d_store [%addr] %dataToStore : index, i32
+    %dataToMem, %addrToMem = d_store [%addr] %dataToStore : i32, index
     ```
   }];
 
-  let arguments = (ins Variadic<AnyType>:$addresses, AnyType:$data);
-  let results = (outs AnyType:$dataResult, Variadic<AnyType>:$addressResults);
+  let arguments = (ins AnyType:$address, AnyType:$data);
+  let results = (outs AnyType:$addressResult, AnyType:$dataResult);
 
   let skipDefaultBuilders = 1;
-  let builders = 
-    [OpBuilder<(ins "Value":$valueToStore, "ValueRange":$indices)>];
-  let hasCustomAssemblyFormat = 1;
-  let hasVerifier = 1;
+  let builders = [OpBuilder<(ins "Value":$valueToStore, "Value":$address)>];
+  let assemblyFormat = " `[` $address `]` $data attr-dict `:` qualified(type($data)) `,` qualified(type($address)) ";
 }
 
 def DynamaticReturnOp : Handshake_Op<"d_return", []> {
