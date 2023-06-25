@@ -1596,13 +1596,36 @@ SmallVector<SmallVector<Value>> MemoryControllerOp::groupInputsByBB() {
 
 std::string MemoryControllerOp::getOperandName(unsigned int idx) {
   if (idx == 0)
-    return "extmem";
+    return "memref";
 
-  return getMemoryOperandName(getStCount(), idx - 1);
+  // Iterate through all memory accesses to find out the type of the operand
+  unsigned ldIdx = 0, stIdx = 0;
+  for (auto &[blockIdx, accesses] : llvm::enumerate(getAccesses())) {
+    if (bbHasControl(blockIdx) && --idx == 0)
+      return "ctrl" + std::to_string(blockIdx);
+    for (auto access : cast<ArrayAttr>(accesses)) {
+      if (cast<AccessTypeEnumAttr>(access).getValue() == AccessTypeEnum::Load) {
+        if (--idx == 0)
+          return "ldAddr" + std::to_string(ldIdx);
+        ldIdx++;
+      } else {
+        if (--idx == 0)
+          return "stAddr" + std::to_string(stIdx);
+        if (--idx == 0)
+          return "stData" + std::to_string(stIdx);
+        stIdx++;
+      }
+    }
+  }
+
+  llvm_unreachable("index too high");
 }
 
 std::string MemoryControllerOp::getResultName(unsigned int idx) {
-  return getMemoryResultName(getLdCount(), getStCount(), idx);
+  if (idx == getNumResults() - 1)
+    return "done";
+
+  return "ldData" + std::to_string(idx);
 }
 
 // DynamaticLoadOp
