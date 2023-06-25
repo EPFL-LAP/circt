@@ -366,7 +366,7 @@ HandshakeLowering::insertMergeOps(HandshakeLowering::ValueMap &mergePairs,
 
 // Get value from predBlock which will be set as operand of op (merge)
 static Value getMergeOperand(HandshakeLowering::MergeOpInfo mergeInfo,
-                             Block *predBlock) {
+                             Block *predBlock, bool isFirstOperand) {
   // The input value to the merge operations
   Value srcVal = mergeInfo.val;
   // The block the merge operation belongs to
@@ -379,9 +379,13 @@ static Value getMergeOperand(HandshakeLowering::MergeOpInfo mergeInfo,
   Operation *termOp = predBlock->getTerminator();
   if (mlir::cf::CondBranchOp br = dyn_cast<mlir::cf::CondBranchOp>(termOp)) {
     // Block should be one of the two destinations of the conditional branch
-    if (block == br.getTrueDest())
+    auto *trueDest = br.getTrueDest(), *falseDest = br.getFalseDest();
+    if (block == trueDest) {
+      if (!isFirstOperand && trueDest == falseDest)
+        return br.getFalseOperand(index);
       return br.getTrueOperand(index);
-    assert(block == br.getFalseDest());
+    }
+    assert(block == falseDest);
     return br.getFalseOperand(index);
   }
   if (isa<mlir::cf::BranchOp>(termOp))
@@ -433,10 +437,11 @@ static void reconnectMergeOps(Region &r,
 
   for (Block &block : r) {
     for (auto &mergeInfo : blockMerges[&block]) {
-      int operandIdx = 0;
+      size_t operandIdx = 0;
       // Set appropriate operand from each predecessor block
       for (auto *predBlock : block.getPredecessors()) {
-        Value mgOperand = getMergeOperand(mergeInfo, predBlock);
+        Value mgOperand =
+            getMergeOperand(mergeInfo, predBlock, operandIdx == 0);
         assert(mgOperand != nullptr);
         if (!mgOperand.getDefiningOp()) {
           assert(mergePairs.count(mgOperand));
@@ -498,33 +503,6 @@ HandshakeLowering::addMergeOps(ConversionPatternRewriter &rewriter) {
   // and resolve all backedges that were created during merge insertion
   reconnectMergeOps(r, mergeOps, mergePairs);
   return success();
-}
-
-static bool isLiveOut(Value val) {
-  // Identifies liveout values after adding Merges
-  for (auto &u : val.getUses())
-    // Result is liveout if used by some Merge block
-    if (isa<MergeLikeOpInterface>(u.getOwner()))
-      return true;
-  return false;
-}
-
-// A value can have multiple branches in a single successor block
-// (for instance, there can be an SSA phi and a merge that we insert)
-// This function determines the number of branches to insert based on the
-// value uses in successor blocks
-static int getBranchCount(Value val, Block *block) {
-  int uses = 0;
-  for (int i = 0, e = block->getNumSuccessors(); i < e; ++i) {
-    int curr = 0;
-    Block *succ = block->getSuccessor(i);
-    for (auto &u : val.getUses()) {
-      if (u.getOwner()->getBlock() == succ)
-        curr++;
-    }
-    uses = (curr > uses) ? curr : uses;
-  }
-  return uses;
 }
 
 namespace {
@@ -1109,56 +1087,65 @@ static Value getSuccResult(Operation *termOp, Operation *newOp,
   return newOp->getResult(0);
 }
 
+static OperandRange getBranchOperands(Operation *termOp) {
+  if (auto condBranchOp = dyn_cast<mlir::cf::CondBranchOp>(termOp))
+    return condBranchOp.getOperands().drop_front();
+  assert(isa<mlir::cf::BranchOp>(termOp) && "unsupported block terminator");
+  return termOp->getOperands();
+}
+
 LogicalResult
 HandshakeLowering::addBranchOps(ConversionPatternRewriter &rewriter) {
-
-  BlockValues liveOuts;
-
-  for (Block &block : r) {
-    for (Operation &op : block) {
-      for (auto result : op.getResults())
-        if (isLiveOut(result))
-          liveOuts[&block].push_back(result);
-    }
-  }
 
   for (Block &block : r) {
     Operation *termOp = block.getTerminator();
     rewriter.setInsertionPoint(termOp);
 
-    for (Value val : liveOuts[&block]) {
-      // Count the number of branches which the liveout needs
-      int numBranches = getBranchCount(val, &block);
+    Value condValue = nullptr;
+    if (auto condBranchOp = dyn_cast<mlir::cf::CondBranchOp>(termOp))
+      condValue = condBranchOp.getCondition();
+    else if (isa<mlir::func::ReturnOp>(termOp))
+      continue;
 
-      // Instantiate branches and connect to Merges
-      for (int i = 0, e = numBranches; i < e; ++i) {
-        Operation *newOp = nullptr;
+    // Insert a branch-like operation for each live-out and replace the original
+    // branch operand value in successor blocks with the result(s) of the new
+    // operation
+    DenseMap<Value, Operation *> branches;
+    for (Value val : getBranchOperands(termOp)) {
 
-        if (auto condBranchOp = dyn_cast<mlir::cf::CondBranchOp>(termOp))
+      // Create a branch-like operation for the branch operand, or re-use one
+      // created earlier for that same value
+      Operation *newOp = nullptr;
+      if (auto branchOp = branches.find(val); branchOp != branches.end())
+        newOp = branchOp->getSecond();
+      else {
+        if (condValue)
           newOp = rewriter.create<handshake::ConditionalBranchOp>(
-              termOp->getLoc(), condBranchOp.getCondition(), val);
-        else if (isa<mlir::cf::BranchOp>(termOp))
+              termOp->getLoc(), condValue, val);
+        else
           newOp = rewriter.create<handshake::BranchOp>(termOp->getLoc(), val);
+        branches.insert(std::make_pair(val, newOp));
+      }
 
-        if (newOp == nullptr)
-          continue;
+      for (int j = 0, e = block.getNumSuccessors(); j < e; ++j) {
+        Block *succ = block.getSuccessor(j);
 
-        for (int j = 0, e = block.getNumSuccessors(); j < e; ++j) {
-          Block *succ = block.getSuccessor(j);
-          Value res = getSuccResult(termOp, newOp, succ);
-
-          for (auto &u : val.getUses()) {
-            if (u.getOwner()->getBlock() == succ) {
-              u.getOwner()->replaceUsesOfWith(val, res);
-              break;
-            }
+        // Look for the merge-like operation in the successor block that takes
+        // as input the original branch operand, and replace the latter with a
+        // result of the newly inserted branch operation
+        for (auto *user : val.getUsers()) {
+          if (user->getBlock() == succ &&
+              isa<handshake::MergeLikeOpInterface>(user)) {
+            user->replaceUsesOfWith(val, getSuccResult(termOp, newOp, succ));
+            break;
           }
         }
       }
     }
   }
+}
 
-  return success();
+return success();
 }
 
 LogicalResult HandshakeLowering::connectConstantsToControl(
