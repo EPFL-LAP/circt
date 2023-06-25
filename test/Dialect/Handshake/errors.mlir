@@ -239,7 +239,7 @@ handshake.func @invalid_pack_wrong_types(%arg0 : i64, %arg1 : i32, %ctrl : none)
 // -----
 
 handshake.func @invalid_memref_block_arg(%arg0 : memref<2xi64>, %ctrl : none) -> none {
-  // expected-error @-1 {{'handshake.func' op expected that block argument #0 is used by an 'extmemory' operation}}
+  // expected-error @-1 {{'handshake.func' op expected that block argument #0 is used by an 'extmemory' or 'memory_controller' operation}}
   return %ctrl : none
 }
 
