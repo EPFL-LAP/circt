@@ -1669,21 +1669,21 @@ LogicalResult DynamaticStoreOp::inferReturnTypes(
 
 // DynamaticReturnOp
 
-void DynamaticReturnOp::build(OpBuilder &builder, OperationState &result,
-                              ValueRange inputs) {
-  // Return has identical operand and result types
-  result.addOperands(inputs);
-  for (auto arg : inputs)
-    result.types.push_back(arg.getType());
+LogicalResult DynamaticReturnOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, mlir::RegionRange regions,
+    SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
+  auto types = operands.getTypes();
+  inferredReturnTypes.append(types.begin(), types.end());
+  return success();
 }
 
 LogicalResult DynamaticReturnOp::verify() {
-  auto *parent = (*this)->getParentOp();
-  auto function = dyn_cast<handshake::FuncOp>(parent);
-  if (!function)
+  auto funcOp = getOperation()->getParentOfType<handshake::FuncOp>();
+  if (!funcOp)
     return emitOpError("must have a handshake.func parent");
 
-  const auto &results = function.getResultTypes();
+  const auto &results = funcOp.getResultTypes();
   // When the enclosing function only returns a control value (no data results),
   // return operations must take exactly one control-only input
   if (results.size() == 1) {

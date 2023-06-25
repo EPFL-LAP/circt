@@ -1024,28 +1024,23 @@ def DynamaticStoreOp : Handshake_Op<"d_store", [
   let assemblyFormat = " `[` $address `]` $data attr-dict `:` qualified(type($data)) `,` qualified(type($address)) ";
 }
 
-def DynamaticReturnOp : Handshake_Op<"d_return", []> {
+def DynamaticReturnOp : Handshake_Op<"d_return", [
+  DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>
+]> {
   let summary = "handshake-level return (dynamatic)";
   let description = [{
     This return operation represents the handshake equivalent of a 
-    func::ReturnOp (i.e., the latter is converted to the former one-to-one,
-    preserving operands). This operation also outputs a list of values that
-    correspond one-to-one to its own operands (i.e., same type and semantic
-    value).
 
     Example:
     ```mlir
-    %out1, %out2 = d_return %in1, %in2 : (i32, i64) -> (i32, i64)
+    %out1, %out2 = d_return %in1, %in2 : i32, i64
     ```
   }];
 
   let arguments = (ins Variadic<AnyType> : $inputs);
   let results = (outs Variadic<AnyType> : $outputs);
-
-  let skipDefaultBuilders = 1;
-  let builders = [OpBuilder<(ins "ValueRange":$inputs)>];
   let hasVerifier = 1;
-  let assemblyFormat = [{ attr-dict ($inputs^ `:` functional-type($inputs, $outputs))? }];
+  let assemblyFormat = [{ attr-dict ($inputs^ `:` type($inputs))? }];
 }
 
 def EndOp : Handshake_Op<"end", [Terminator]> {
