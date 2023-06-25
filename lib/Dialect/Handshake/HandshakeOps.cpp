@@ -1652,7 +1652,8 @@ std::string DynamaticLoadOp::getResultName(unsigned int idx) {
 
 LogicalResult DynamaticLoadOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, mlir::RegionRange regions,
+    DictionaryAttr attributes, mlir::OpaqueProperties properties,
+    mlir::RegionRange regions,
     SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
   auto opTypes = operands.getTypes();
   inferredReturnTypes.insert(inferredReturnTypes.end(), opTypes.begin(),
@@ -1684,7 +1685,8 @@ std::string DynamaticStoreOp::getResultName(unsigned int idx) {
 
 LogicalResult DynamaticStoreOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, mlir::RegionRange regions,
+    DictionaryAttr attributes, mlir::OpaqueProperties properties,
+    mlir::RegionRange regions,
     SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
   auto types = operands.getTypes();
   inferredReturnTypes.append(types.begin(), types.end());
@@ -1695,7 +1697,8 @@ LogicalResult DynamaticStoreOp::inferReturnTypes(
 
 LogicalResult DynamaticReturnOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, mlir::RegionRange regions,
+    DictionaryAttr attributes, mlir::OpaqueProperties properties,
+    mlir::RegionRange regions,
     SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
   auto types = operands.getTypes();
   inferredReturnTypes.append(types.begin(), types.end());

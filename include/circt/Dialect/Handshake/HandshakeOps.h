@@ -70,7 +70,9 @@ template <typename ConcreteType>
 class HasClock : public TraitBase<ConcreteType, HasClock> {};
 } // namespace OpTrait
 
+namespace affine {
 struct DependenceComponent;
+} // namespace affine
 } // namespace mlir
 
 #define GET_ATTRDEF_CLASSES

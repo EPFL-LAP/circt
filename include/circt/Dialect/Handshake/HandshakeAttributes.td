@@ -43,7 +43,7 @@ def MemAccessNameAttr : Handshake_Attr<"MemAccessName", "access_name"> {
     to allow memory accesses to reference one another by name. This attribute is
     a simple wrapper around a StringAttr.
   }];
-
+  
   let parameters = (ins "::mlir::StringAttr":$name);
   let builders = [
     AttrBuilder<(ins "::mlir::StringRef":$name),
@@ -55,9 +55,9 @@ def MemAccessNameAttr : Handshake_Attr<"MemAccessName", "access_name"> {
 def DependenceComponentAttr : Handshake_Attr<"DependenceComponent", "dep_comp"> {
   let summary = "Information about the direction of a dependence for an AffineForOp";
   let description = [{
-    Holds the same information as a `mlir::DependenceComponent` (except the 
-    `op` it refers to, since this would typically be attached to the operation
-    in question or to one that would reference it through a
+    Holds the same information as a `mlir::affine::DependenceComponent` (except 
+    the `op` it refers to, since this would typically be attached to the
+    operation in question or to one that would reference it through a
     `::circt::handshake::MemDependenceAttr`).
   }];
 
@@ -73,13 +73,13 @@ def MemDependenceAttr : Handshake_Attr<"MemDependence", "dep"> {
     the `dstAccess` parameter. For example, if the source operation is a
     memref::StoreOp and the destination operation is a memref::LoadOp, this
     represents a RAW memory dependency. 
-
+    
     The dependency is furthermore characterized by the loop depth at which the
     dependency is (`loopDepth`) and a list of dependence components
     (`components`) whose size indicates the number of commom loops surrounding
     both operations.
   }];
-
+  
   let parameters = (ins 
     "::mlir::StringAttr":$dstAccess,
     "unsigned":$loopDepth,
@@ -89,7 +89,7 @@ def MemDependenceAttr : Handshake_Attr<"MemDependence", "dep"> {
   let builders = [
     AttrBuilder<(ins  "::mlir::StringRef":$dstAccess, 
                       "unsigned":$loopDepth,
-                      "::mlir::ArrayRef<::mlir::DependenceComponent>":$components), [{
+                      "::mlir::ArrayRef<::mlir::affine::DependenceComponent>":$components), [{
       SmallVector<::circt::handshake::DependenceComponentAttr> compAttrs;
       for (auto &comp : components)
         compAttrs.push_back(::circt::handshake::DependenceComponentAttr::get(

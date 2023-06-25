@@ -1143,9 +1143,8 @@ HandshakeLowering::addBranchOps(ConversionPatternRewriter &rewriter) {
       }
     }
   }
-}
 
-return success();
+  return success();
 }
 
 LogicalResult HandshakeLowering::connectConstantsToControl(
