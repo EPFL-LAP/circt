@@ -1013,6 +1013,10 @@ def DynamaticReturnOp : Handshake_Op<"d_return", [
   let summary = "handshake-level return (dynamatic)";
   let description = [{
     This return operation represents the handshake equivalent of a 
+    func::ReturnOp (i.e., the latter is converted to the former one-to-one,
+    preserving operands). This operation also outputs a list of values that
+    correspond one-to-one to its own operands (i.e., same type and semantic
+    value).
 
     Example:
     ```mlir

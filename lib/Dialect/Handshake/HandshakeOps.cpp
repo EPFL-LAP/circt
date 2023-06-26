@@ -35,6 +35,7 @@
 
 using namespace circt;
 using namespace circt::handshake;
+using namespace dynamatic;
 
 namespace circt {
 namespace handshake {
@@ -1854,6 +1855,180 @@ Attribute MemDependenceAttr::parse(AsmParser &odsParser, Type odsType) {
   if (odsParser.parseGreater())
     return Attribute();
   return MemDependenceAttr::get(ctx, dstAccess, loopDepth, components);
+}
+
+// ChannelBufProps
+
+ChannelBufProps::ChannelBufProps(unsigned minTrans,
+                                 std::optional<unsigned> maxTrans,
+                                 unsigned minNonTrans,
+                                 std::optional<unsigned> maxNonTrans)
+    : minTrans(minTrans), maxTrans(maxTrans), minNonTrans(minNonTrans),
+      maxNonTrans(maxNonTrans){};
+
+std::optional<ChannelBufProps>
+ChannelBufProps::substractTrans(unsigned numSlots) {
+  if (maxTrans.has_value()) {
+    if (maxTrans.value() < numSlots)
+      return {};
+    return ChannelBufProps(std::max(minTrans - numSlots, 0U),
+                           maxTrans.value() - numSlots, minNonTrans,
+                           maxNonTrans);
+  }
+  return ChannelBufProps(std::max(minTrans - numSlots, 0U), maxTrans,
+                         minNonTrans, maxNonTrans);
+}
+
+std::optional<ChannelBufProps>
+ChannelBufProps::substractNonTrans(unsigned numSlots) {
+  if (maxNonTrans.has_value()) {
+    if (maxNonTrans.value() < numSlots)
+      return {};
+    return ChannelBufProps(minTrans, maxTrans,
+                           std::max(minNonTrans - numSlots, 0U),
+                           maxNonTrans.value() - numSlots);
+  }
+  return ChannelBufProps(minTrans, maxTrans,
+                         std::max(minNonTrans - numSlots, 0U), maxNonTrans);
+}
+
+llvm::hash_code dynamatic::hash_value(const ChannelBufProps &props) {
+  return llvm::hash_value(std::make_tuple(
+      props.minTrans, props.maxTrans, props.minNonTrans, props.maxNonTrans));
+}
+
+// OpBufPropsAttr
+
+/// Returns the string corresponding to the interval's upper bound.
+static std::string printOptMax(std::optional<unsigned> maxSlots) {
+  return maxSlots.has_value() ? std::to_string(maxSlots.value()) + "]" : "inf)";
+}
+
+/// Prints the channel's buffering properties using the ODS printer.
+static void printChannelBufProps(AsmPrinter &odsPrinter,
+                                 const ChannelBufProps &props) {
+  odsPrinter << "[" << props.minTrans << "," << printOptMax(props.maxTrans)
+             << ", [" << props.minNonTrans << ","
+             << printOptMax(props.maxNonTrans);
+}
+
+void OpBufPropsAttr::print(AsmPrinter &odsPrinter) const {
+  auto propsList = getAllChannelProps();
+  if (propsList.empty())
+    return;
+
+  for (auto &[resIdx, channelProps] : propsList.drop_back()) {
+    odsPrinter << resIdx << ": ";
+    printChannelBufProps(odsPrinter, channelProps);
+    odsPrinter << ", ";
+  }
+  auto &[resIdx, channelProps] = propsList.back();
+  odsPrinter << resIdx << ": ";
+  printChannelBufProps(odsPrinter, channelProps);
+}
+
+/// Parses the maximum number of slots and fills the last argument with the
+/// parsed value (std::nullopt if not specified).
+static ParseResult parseMaxSlots(AsmParser &odsParser,
+                                 std::optional<unsigned> &maxSlots) {
+  if (odsParser.parseKeyword("inf")) {
+    unsigned parsedMaxSlots;
+    // When there is a maximum, the interval is closed to the right
+    if (odsParser.parseInteger(parsedMaxSlots) || odsParser.parseRSquare())
+      return failure();
+    maxSlots = parsedMaxSlots;
+    return success();
+  }
+
+  // When there is no maximum, the interval is open to the right
+  if (odsParser.parseRParen())
+    return failure();
+
+  // No maximum
+  maxSlots = std::nullopt;
+  return success();
+}
+
+/// Parses channel buffering properties. Returns std::nullopt when failing to
+/// parse them, otherwise returns the properties.
+static std::optional<ChannelBufProps>
+parseChannelBufProps(AsmParser &odsParser) {
+
+  unsigned minTrans, minNonTrans;
+  std::optional<unsigned> maxTrans, maxNonTrans;
+
+  // Parse first interval (transparent slots)
+  if (odsParser.parseLSquare() || odsParser.parseInteger(minTrans) ||
+      odsParser.parseComma() || parseMaxSlots(odsParser, maxTrans))
+    return std::nullopt;
+
+  // Parse comma separating the two intervals
+  if (odsParser.parseComma())
+    return std::nullopt;
+
+  // Parse second interval (non-transparent slots)
+  if (odsParser.parseLSquare() || odsParser.parseInteger(minNonTrans) ||
+      odsParser.parseComma() || parseMaxSlots(odsParser, maxNonTrans))
+    return std::nullopt;
+
+  return ChannelBufProps(minTrans, maxTrans, minNonTrans, maxNonTrans);
+}
+
+Attribute OpBufPropsAttr::parse(AsmParser &odsParser, Type odsType) {
+  SmallVector<std::pair<size_t, ChannelBufProps>> allChannelProps;
+  auto parseChannelProps = [&]() -> ParseResult {
+    // Parse the channel index
+    size_t channelIdx;
+    if (odsParser.parseInteger(channelIdx))
+      return failure();
+
+    // Parse the channel properties
+    auto channelProps = parseChannelBufProps(odsParser);
+    if (!channelProps.has_value())
+      return failure();
+
+    allChannelProps.push_back(std::make_pair(channelIdx, channelProps.value()));
+    return success();
+  };
+
+  // The attribute is printed as a comma-separated list of named channel
+  // properties
+  if (odsParser.parseCommaSeparatedList(parseChannelProps))
+    return Attribute();
+
+  return OpBufPropsAttr::get(odsParser.getContext(), allChannelProps);
+}
+
+LogicalResult OpBufPropsAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError,
+    ArrayRef<std::pair<size_t, ChannelBufProps>> allChannelProps) {
+
+  std::set<size_t> allIndices;
+  for (auto &[resIdx, props] : allChannelProps) {
+    // All indices in the array (first element of each pair) must be unique
+    if (auto [_, newIdx] = allIndices.insert(resIdx); !newIdx)
+      return emitError() << "multiple channel properties for result " << newIdx;
+
+    // Check that the maximum number of transparent slots is higher than the
+    // minimum
+    if (props.maxTrans.has_value() and props.maxTrans.value() < props.minTrans)
+      return emitError()
+             << "Maximum number of allowed trans slots ("
+             << props.maxTrans.value()
+             << ") is smaller than minimum number of transparent slots ("
+             << props.minTrans << ")";
+
+    // Check that the maximum number of non-transparent slots is higher than the
+    // minimum
+    if (props.maxNonTrans.has_value() and
+        props.maxNonTrans.value() < props.minNonTrans)
+      return emitError()
+             << "Maximum number of allowed non-transparent slots ("
+             << props.maxNonTrans.value()
+             << ") is smaller than minimum number of non-transparent slots ("
+             << props.minNonTrans << ")";
+  }
+  return success();
 }
 
 #define GET_OP_CLASSES

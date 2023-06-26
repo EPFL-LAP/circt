@@ -110,13 +110,40 @@ def MemDependenceAttr : Handshake_Attr<"MemDependence", "dep"> {
 def MemDependenceArrayAttr : Handshake_Attr<"MemDependenceArray", "deps"> {
   let summary = "A list of memory dependencies with respect to other memory operations";
   let description = [{
-    Reprensents a list of memory dependencies between the operation this
+    Represents a list of memory dependencies between the operation this
     attribute is attached to and other named memory accesses in the same
     function.
   }];
 
   let parameters = (ins ArrayRefParameter<"::circt::handshake::MemDependenceAttr">:$dependencies);
   let assemblyFormat = "`[` $dependencies `]`";
+}
+
+//===----------------------------------------------------------------------===//
+// Channel annotations for buffer placement
+//===----------------------------------------------------------------------===//
+
+def OpBufPropsAttr : Handshake_Attr<"OpBufProps", "opBufProps"> {
+  let summary = "Buffering properties for an operation's results (i.e., output channels)";
+  let description = [{
+    Holds information about all specific buffering properties attached to the
+    results (equivalently, the output channels) of an operation. In most
+    situations, users of this attribute should use the helper functions in
+    dynamatic/Support/BufferingStrategy.h to manipulate it, as its internal
+    data structure is not convenient to use.
+
+    The attribute tracks which buffering properties belong to which channel
+    using each operation result's index. Internally, it uses a list of pairs,
+    (index, properties) to store everything. A map would be more appropriate but
+    requires extra work. As of now, the attribute's verification method ensures
+    that result indices are unique in the list.
+  }];
+  
+  let parameters = (ins
+    ArrayRefParameter<"::std::pair<size_t, ::dynamatic::ChannelBufProps>">:$allChannelProps);
+
+  let hasCustomAssemblyFormat = 1;  
+  let genVerifyDecl = 1;
 }
 
 #endif // CIRCT_DIALECT_HANDSHAKE_ATTRIBUTES_TD

@@ -64,6 +64,55 @@ bool isControlOpImpl(Operation *op);
 } // end namespace handshake
 } // end namespace circt
 
+namespace dynamatic {
+
+/// Specifies how a handshake channel (i.e. a SSA value used once) may be
+/// buffered. Backing data-structure for the ChannelBufPropsAttr attribute.
+struct ChannelBufProps {
+  /// Minimum number of transparent slots allowed on the channel
+  unsigned minTrans;
+  /// Maximum number of transparent slots allowed on the channel
+  std::optional<unsigned> maxTrans;
+  /// Minimum number of non-transparent slots allowed on the channel
+  unsigned minNonTrans;
+  /// Maximum number of non-transparent slots allowed on the channel
+  std::optional<unsigned> maxNonTrans;
+
+  /// Simple constructor that takes the same parameters as the struct's members.
+  /// By default, all parameters are set so that the channel is "unconstrained"
+  /// w.r.t. what kind of buffers can be placed.
+  ChannelBufProps(unsigned minTrans = 0,
+                  std::optional<unsigned> maxTrans = std::nullopt,
+                  unsigned minNonTrans = 0,
+                  std::optional<unsigned> maxNonTrans = std::nullopt);
+
+  /// Produces channel buffering properties based on the current ones minus a
+  /// particular number of transparent slots. Returns std::nullopt if the
+  /// provided number of slots is greater than the maximum number of allowed
+  /// slots (indicating that properties can't be satisfied).
+  std::optional<ChannelBufProps> substractTrans(unsigned numSlots);
+
+  /// Produces channel buffering properties based on the current ones minus a
+  /// particular number of non-transparent slots. Returns std::nullopt if the
+  /// provided number of slots is greater than the maximum number of allowed
+  /// slots (indicating that properties can't be satisfied).
+  std::optional<ChannelBufProps> substractNonTrans(unsigned numSlots);
+
+  /// Computes member-wise equality.
+  inline bool operator==(const ChannelBufProps &rhs) const {
+    return (this->minTrans == rhs.minTrans) &&
+           (this->maxTrans == rhs.maxTrans) &&
+           (this->minNonTrans == rhs.minNonTrans) &&
+           (this->maxNonTrans == rhs.maxNonTrans);
+  }
+};
+
+/// Custom specialization of llvm::hash_value for ChannelBufProps. Converts the
+/// struct to a tuple and use the hash_value function on tuples to get our own
+/// hash.
+llvm::hash_code hash_value(const ChannelBufProps &props);
+} // namespace dynamatic
+
 namespace mlir {
 namespace OpTrait {
 template <typename ConcreteType>
