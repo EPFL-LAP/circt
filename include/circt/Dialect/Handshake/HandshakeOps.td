@@ -933,6 +933,11 @@ def MemoryControllerOp : Handshake_Op<"mem_controller", [
     /// basic block. By construction, all of the interface's inputs are present
     /// in exactly one group. 
     mlir::SmallVector<mlir::SmallVector<mlir::Value>> groupInputsByBB();
+
+    /// Returns a tuple containing, in order, the (potentially undefined)
+    /// bitwidth of control operands, the bitwidth of address operands, and the
+    /// biwidth of data operands/results.
+    std::tuple<std::optional<unsigned>, unsigned, unsigned> getBitwidths();
   }];
 }
 

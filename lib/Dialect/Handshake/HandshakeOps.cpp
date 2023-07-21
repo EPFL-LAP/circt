@@ -1630,6 +1630,51 @@ std::string MemoryControllerOp::getResultName(unsigned int idx) {
   return "ldData" + std::to_string(idx);
 }
 
+std::tuple<std::optional<unsigned>, unsigned, unsigned>
+MemoryControllerOp::getBitwidths() {
+  std::optional<unsigned> ctrlWidth, addrWidth;
+  ValueRange inputs = getInputs();
+  size_t operandIdx = 0;
+
+  // Set the width if not already set
+  auto setIfFirst = [&](std::optional<unsigned> &width, size_t idx) {
+    if (!width.has_value())
+      width = cast<IntegerType>(inputs[idx].getType()).getIntOrFloatBitWidth();
+  };
+
+  // Iterate over all accesses to find the bitwidth of each signal type
+  for (auto [blockIdx, accesses] : llvm::enumerate(getAccesses())) {
+    auto blockAccesses = cast<ArrayAttr>(accesses);
+
+    // Check if we can determine the control bitwidth
+    if (bbHasControl(blockIdx))
+      setIfFirst(ctrlWidth, operandIdx++);
+
+    // Check if we can determine the address or data butwidths
+    for (auto access : blockAccesses) {
+      if (cast<AccessTypeEnumAttr>(access).getValue() == AccessTypeEnum::Load)
+        setIfFirst(addrWidth, operandIdx++);
+      else {
+        setIfFirst(addrWidth, operandIdx++);
+        ++operandIdx;
+      }
+    }
+
+    // Stop if we have found all widths
+    if (ctrlWidth.has_value() && addrWidth.has_value())
+      break;
+  }
+
+  // If there are no memory accesses attached to the controller, just set a
+  // default address bitwidth equal to the width of an IndexType
+  if (!addrWidth.has_value())
+    addrWidth = IndexType::kInternalStorageBitWidth;
+
+  return std::make_tuple(
+      ctrlWidth, addrWidth.value(),
+      getMemref().getType().getElementType().getIntOrFloatBitWidth());
+}
+
 // DynamaticLoadOp
 
 void DynamaticLoadOp::build(OpBuilder &builder, OperationState &result,
