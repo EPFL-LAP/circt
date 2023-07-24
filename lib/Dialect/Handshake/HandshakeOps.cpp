@@ -1630,17 +1630,21 @@ std::string MemoryControllerOp::getResultName(unsigned int idx) {
   return "ldData" + std::to_string(idx);
 }
 
-std::tuple<std::optional<unsigned>, unsigned, unsigned>
-MemoryControllerOp::getBitwidths() {
-  std::optional<unsigned> ctrlWidth, addrWidth;
+std::tuple<unsigned, unsigned, unsigned> MemoryControllerOp::getBitwidths() {
+  unsigned ctrlWidth = 0, addrWidth = 0, dataWidth = 0;
   ValueRange inputs = getInputs();
   size_t operandIdx = 0;
 
   // Set the width if not already set
-  auto setIfFirst = [&](std::optional<unsigned> &width, size_t idx) {
-    if (!width.has_value())
+  auto setIfFirst = [&](unsigned &width, size_t idx) {
+    if (width == 0)
       width = cast<IntegerType>(inputs[idx].getType()).getIntOrFloatBitWidth();
   };
+
+  // If there is more than one result then the first one is a data signal
+  if (getNumResults() > 1)
+    dataWidth =
+        cast<IntegerType>(getResult(0).getType()).getIntOrFloatBitWidth();
 
   // Iterate over all accesses to find the bitwidth of each signal type
   for (auto [blockIdx, accesses] : llvm::enumerate(getAccesses())) {
@@ -1656,23 +1660,16 @@ MemoryControllerOp::getBitwidths() {
         setIfFirst(addrWidth, operandIdx++);
       else {
         setIfFirst(addrWidth, operandIdx++);
-        ++operandIdx;
+        setIfFirst(dataWidth, operandIdx++);
       }
     }
 
     // Stop if we have found all widths
-    if (ctrlWidth.has_value() && addrWidth.has_value())
+    if (ctrlWidth != 0 && addrWidth != 0 && dataWidth != 0)
       break;
   }
 
-  // If there are no memory accesses attached to the controller, just set a
-  // default address bitwidth equal to the width of an IndexType
-  if (!addrWidth.has_value())
-    addrWidth = IndexType::kInternalStorageBitWidth;
-
-  return std::make_tuple(
-      ctrlWidth, addrWidth.value(),
-      getMemref().getType().getElementType().getIntOrFloatBitWidth());
+  return std::make_tuple(ctrlWidth, addrWidth, dataWidth);
 }
 
 // DynamaticLoadOp
