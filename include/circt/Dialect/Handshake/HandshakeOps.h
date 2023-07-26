@@ -73,43 +73,44 @@ struct ChannelBufProps {
   unsigned minTrans;
   /// Maximum number of transparent slots allowed on the channel
   std::optional<unsigned> maxTrans;
-  /// Minimum number of non-transparent slots allowed on the channel
-  unsigned minNonTrans;
-  /// Maximum number of non-transparent slots allowed on the channel
-  std::optional<unsigned> maxNonTrans;
+  /// Minimum number of opaque slots allowed on the channel
+  unsigned minOpaque;
+  /// Maximum number of opaque slots allowed on the channel
+  std::optional<unsigned> maxOpaque;
 
   /// Simple constructor that takes the same parameters as the struct's members.
   /// By default, all parameters are set so that the channel is "unconstrained"
   /// w.r.t. what kind of buffers can be placed.
   ChannelBufProps(unsigned minTrans = 0,
                   std::optional<unsigned> maxTrans = std::nullopt,
-                  unsigned minNonTrans = 0,
-                  std::optional<unsigned> maxNonTrans = std::nullopt);
+                  unsigned minOpaque = 0,
+                  std::optional<unsigned> maxOpaque = std::nullopt);
 
   /// Produces channel buffering properties based on the current ones minus a
   /// particular number of transparent slots. Returns std::nullopt if the
   /// provided number of slots is greater than the maximum number of allowed
   /// slots (indicating that properties can't be satisfied).
-  std::optional<ChannelBufProps> substractTrans(unsigned numSlots);
+  std::optional<ChannelBufProps> subtractTrans(unsigned numSlots);
 
   /// Produces channel buffering properties based on the current ones minus a
-  /// particular number of non-transparent slots. Returns std::nullopt if the
+  /// particular number of opaque slots. Returns std::nullopt if the
   /// provided number of slots is greater than the maximum number of allowed
   /// slots (indicating that properties can't be satisfied).
-  std::optional<ChannelBufProps> substractNonTrans(unsigned numSlots);
+  std::optional<ChannelBufProps> subtractOpaque(unsigned numSlots);
 
   /// Computes member-wise equality.
   inline bool operator==(const ChannelBufProps &rhs) const {
     return (this->minTrans == rhs.minTrans) &&
            (this->maxTrans == rhs.maxTrans) &&
-           (this->minNonTrans == rhs.minNonTrans) &&
-           (this->maxNonTrans == rhs.maxNonTrans);
+           (this->minOpaque == rhs.minOpaque) &&
+           (this->maxOpaque == rhs.maxOpaque);
   }
 };
 
 /// Custom specialization of llvm::hash_value for ChannelBufProps. Converts the
 /// struct to a tuple and use the hash_value function on tuples to get our own
 /// hash.
+// NOLINTNEXTLINE(readability-identifier-naming)
 llvm::hash_code hash_value(const ChannelBufProps &props);
 } // namespace dynamatic
 

@@ -1903,40 +1903,40 @@ Attribute MemDependenceAttr::parse(AsmParser &odsParser, Type odsType) {
 
 ChannelBufProps::ChannelBufProps(unsigned minTrans,
                                  std::optional<unsigned> maxTrans,
-                                 unsigned minNonTrans,
-                                 std::optional<unsigned> maxNonTrans)
-    : minTrans(minTrans), maxTrans(maxTrans), minNonTrans(minNonTrans),
-      maxNonTrans(maxNonTrans){};
+                                 unsigned minOpaque,
+                                 std::optional<unsigned> maxOpaque)
+    : minTrans(minTrans), maxTrans(maxTrans), minOpaque(minOpaque),
+      maxOpaque(maxOpaque){};
 
 std::optional<ChannelBufProps>
-ChannelBufProps::substractTrans(unsigned numSlots) {
+ChannelBufProps::subtractTrans(unsigned numSlots) {
+  std::optional<unsigned> newMaxTrans;
   if (maxTrans.has_value()) {
     if (maxTrans.value() < numSlots)
       return {};
-    return ChannelBufProps(std::max(minTrans - numSlots, 0U),
-                           maxTrans.value() - numSlots, minNonTrans,
-                           maxNonTrans);
+    newMaxTrans = maxTrans.value() - numSlots;
   }
-  return ChannelBufProps(std::max(minTrans - numSlots, 0U), maxTrans,
-                         minNonTrans, maxNonTrans);
+
+  unsigned newMinTrans = minTrans < numSlots ? 0U : minTrans - numSlots;
+  return ChannelBufProps(newMinTrans, minTrans, minOpaque, maxOpaque);
 }
 
 std::optional<ChannelBufProps>
-ChannelBufProps::substractNonTrans(unsigned numSlots) {
-  if (maxNonTrans.has_value()) {
-    if (maxNonTrans.value() < numSlots)
+ChannelBufProps::subtractOpaque(unsigned numSlots) {
+  std::optional<unsigned> newMaxOpaque;
+  if (maxOpaque.has_value()) {
+    if (maxOpaque.value() < numSlots)
       return {};
-    return ChannelBufProps(minTrans, maxTrans,
-                           std::max(minNonTrans - numSlots, 0U),
-                           maxNonTrans.value() - numSlots);
+    newMaxOpaque = maxOpaque.value() - numSlots;
   }
-  return ChannelBufProps(minTrans, maxTrans,
-                         std::max(minNonTrans - numSlots, 0U), maxNonTrans);
+
+  unsigned newMinOpaque = minOpaque < numSlots ? 0U : minOpaque - numSlots;
+  return ChannelBufProps(minTrans, maxTrans, newMinOpaque, newMaxOpaque);
 }
 
 llvm::hash_code dynamatic::hash_value(const ChannelBufProps &props) {
-  return llvm::hash_value(std::make_tuple(
-      props.minTrans, props.maxTrans, props.minNonTrans, props.maxNonTrans));
+  return llvm::hash_value(std::make_tuple(props.minTrans, props.maxTrans,
+                                          props.minOpaque, props.maxOpaque));
 }
 
 // OpBufPropsAttr
@@ -1950,8 +1950,7 @@ static std::string printOptMax(std::optional<unsigned> maxSlots) {
 static void printChannelBufProps(AsmPrinter &odsPrinter,
                                  const ChannelBufProps &props) {
   odsPrinter << "[" << props.minTrans << "," << printOptMax(props.maxTrans)
-             << ", [" << props.minNonTrans << ","
-             << printOptMax(props.maxNonTrans);
+             << ", [" << props.minOpaque << "," << printOptMax(props.maxOpaque);
 }
 
 void OpBufPropsAttr::print(AsmPrinter &odsPrinter) const {
@@ -1996,8 +1995,8 @@ static ParseResult parseMaxSlots(AsmParser &odsParser,
 static std::optional<ChannelBufProps>
 parseChannelBufProps(AsmParser &odsParser) {
 
-  unsigned minTrans, minNonTrans;
-  std::optional<unsigned> maxTrans, maxNonTrans;
+  unsigned minTrans, minOpaque;
+  std::optional<unsigned> maxTrans, maxOpaque;
 
   // Parse first interval (transparent slots)
   if (odsParser.parseLSquare() || odsParser.parseInteger(minTrans) ||
@@ -2008,12 +2007,12 @@ parseChannelBufProps(AsmParser &odsParser) {
   if (odsParser.parseComma())
     return std::nullopt;
 
-  // Parse second interval (non-transparent slots)
-  if (odsParser.parseLSquare() || odsParser.parseInteger(minNonTrans) ||
-      odsParser.parseComma() || parseMaxSlots(odsParser, maxNonTrans))
+  // Parse second interval (opaque slots)
+  if (odsParser.parseLSquare() || odsParser.parseInteger(minOpaque) ||
+      odsParser.parseComma() || parseMaxSlots(odsParser, maxOpaque))
     return std::nullopt;
 
-  return ChannelBufProps(minTrans, maxTrans, minNonTrans, maxNonTrans);
+  return ChannelBufProps(minTrans, maxTrans, minOpaque, maxOpaque);
 }
 
 Attribute OpBufPropsAttr::parse(AsmParser &odsParser, Type odsType) {
@@ -2060,15 +2059,13 @@ LogicalResult OpBufPropsAttr::verify(
              << ") is smaller than minimum number of transparent slots ("
              << props.minTrans << ")";
 
-    // Check that the maximum number of non-transparent slots is higher than the
-    // minimum
-    if (props.maxNonTrans.has_value() and
-        props.maxNonTrans.value() < props.minNonTrans)
-      return emitError()
-             << "Maximum number of allowed non-transparent slots ("
-             << props.maxNonTrans.value()
-             << ") is smaller than minimum number of non-transparent slots ("
-             << props.minNonTrans << ")";
+    // Check that the maximum number of opaque slots is higher than the minimum
+    if (props.maxOpaque.has_value() and
+        props.maxOpaque.value() < props.minOpaque)
+      return emitError() << "Maximum number of allowed opaque slots ("
+                         << props.maxOpaque.value()
+                         << ") is smaller than minimum number of opaque slots ("
+                         << props.minOpaque << ")";
   }
   return success();
 }
