@@ -1675,12 +1675,11 @@ std::tuple<unsigned, unsigned, unsigned> MemoryControllerOp::getBitwidths() {
 // DynamaticLoadOp
 
 void DynamaticLoadOp::build(OpBuilder &builder, OperationState &result,
-                            Value memref, Value address) {
+                            MemRefType memrefType, Value address) {
   // Address (data value will be added later in the elastic pass)
   result.addOperands(address);
 
   // Data and address outputs
-  auto memrefType = memref.getType().cast<MemRefType>();
   result.types.push_back(address.getType());
   result.types.push_back(memrefType.getElementType());
 }
@@ -1705,18 +1704,6 @@ LogicalResult DynamaticLoadOp::inferReturnTypes(
 }
 
 // DynamaticStoreOp
-
-void DynamaticStoreOp::build(OpBuilder &builder, OperationState &result,
-                             Value valueToStore, Value address) {
-
-  // Operands (address + data)
-  result.addOperands(address);
-  result.addOperands(valueToStore);
-
-  // Results (address + data)
-  result.types.push_back(address.getType());
-  result.types.push_back(valueToStore.getType());
-}
 
 std::string DynamaticStoreOp::getOperandName(unsigned int idx) {
   return (idx == 0) ? "addrIn" : "dataIn";

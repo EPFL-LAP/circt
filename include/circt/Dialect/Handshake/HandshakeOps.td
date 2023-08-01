@@ -972,11 +972,8 @@ def DynamaticLoadOp : Handshake_Op<"d_load", [
 
   let arguments = (ins AnyType:$address, AnyType:$data);
   let results = (outs AnyType:$addressResult, AnyType:$dataResult);
-
-  let skipDefaultBuilders = 1;
-  let builders = [OpBuilder<(ins "Value":$memref, "Value":$address)>];
+  let builders = [OpBuilder<(ins "MemRefType":$memrefType, "Value":$address)>];
   let assemblyFormat = " `[` $address `]` $data attr-dict `:` qualified(type($address)) `,` qualified(type($data)) ";
-
 }
 
 def DynamaticStoreOp : Handshake_Op<"d_store", [
@@ -1007,9 +1004,6 @@ def DynamaticStoreOp : Handshake_Op<"d_store", [
 
   let arguments = (ins AnyType:$address, AnyType:$data);
   let results = (outs AnyType:$addressResult, AnyType:$dataResult);
-
-  let skipDefaultBuilders = 1;
-  let builders = [OpBuilder<(ins "Value":$valueToStore, "Value":$address)>];
   let assemblyFormat = " `[` $address `]` $data attr-dict `:` qualified(type($data)) `,` qualified(type($address)) ";
 }
 
