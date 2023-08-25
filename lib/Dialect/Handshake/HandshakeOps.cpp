@@ -1895,30 +1895,28 @@ ChannelBufProps::ChannelBufProps(unsigned minTrans,
     : minTrans(minTrans), maxTrans(maxTrans), minOpaque(minOpaque),
       maxOpaque(maxOpaque){};
 
-std::optional<ChannelBufProps>
-ChannelBufProps::subtractTrans(unsigned numSlots) {
-  std::optional<unsigned> newMaxTrans;
-  if (maxTrans.has_value()) {
-    if (maxTrans.value() < numSlots)
-      return {};
-    newMaxTrans = maxTrans.value() - numSlots;
-  }
-
-  unsigned newMinTrans = minTrans < numSlots ? 0U : minTrans - numSlots;
-  return ChannelBufProps(newMinTrans, minTrans, minOpaque, maxOpaque);
+bool ChannelBufProps::isSatisfiable() const {
+  return (!maxTrans.has_value() || maxTrans.value() > minTrans) &&
+         (!maxOpaque.has_value() || maxOpaque.value() > minOpaque);
 }
 
-std::optional<ChannelBufProps>
-ChannelBufProps::subtractOpaque(unsigned numSlots) {
-  std::optional<unsigned> newMaxOpaque;
-  if (maxOpaque.has_value()) {
-    if (maxOpaque.value() < numSlots)
-      return {};
-    newMaxOpaque = maxOpaque.value() - numSlots;
-  }
+bool ChannelBufProps::operator==(const ChannelBufProps &rhs) const {
+  return (this->minTrans == rhs.minTrans) && (this->maxTrans == rhs.maxTrans) &&
+         (this->minOpaque == rhs.minOpaque) &&
+         (this->maxOpaque == rhs.maxOpaque);
+}
 
-  unsigned newMinOpaque = minOpaque < numSlots ? 0U : minOpaque - numSlots;
-  return ChannelBufProps(minTrans, maxTrans, newMinOpaque, newMaxOpaque);
+std::ostream &operator<<(std::ostream &os, const ChannelBufProps &props) {
+  std::string maxTransStr = props.maxTrans.has_value()
+                                ? (std::to_string(props.maxTrans.value()) + "]")
+                                : "inf)";
+  std::string maxOpaqueStr =
+      props.maxOpaque.has_value()
+          ? (std::to_string(props.maxOpaque.value()) + "]")
+          : "inf)";
+  os << "T: [" << props.minTrans << ", " << maxTransStr << ", O: ["
+     << props.minOpaque << ", " << maxOpaqueStr;
+  return os;
 }
 
 llvm::hash_code dynamatic::hash_value(const ChannelBufProps &props) {

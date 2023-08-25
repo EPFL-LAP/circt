@@ -86,25 +86,12 @@ struct ChannelBufProps {
                   unsigned minOpaque = 0,
                   std::optional<unsigned> maxOpaque = std::nullopt);
 
-  /// Produces channel buffering properties based on the current ones minus a
-  /// particular number of transparent slots. Returns std::nullopt if the
-  /// provided number of slots is greater than the maximum number of allowed
-  /// slots (indicating that properties can't be satisfied).
-  std::optional<ChannelBufProps> subtractTrans(unsigned numSlots);
-
-  /// Produces channel buffering properties based on the current ones minus a
-  /// particular number of opaque slots. Returns std::nullopt if the
-  /// provided number of slots is greater than the maximum number of allowed
-  /// slots (indicating that properties can't be satisfied).
-  std::optional<ChannelBufProps> subtractOpaque(unsigned numSlots);
+  /// Determines whether these buffering properties are satisfiable i.e.,
+  /// whether it's possible to create a buffer that respects them.
+  bool isSatisfiable() const;
 
   /// Computes member-wise equality.
-  inline bool operator==(const ChannelBufProps &rhs) const {
-    return (this->minTrans == rhs.minTrans) &&
-           (this->maxTrans == rhs.maxTrans) &&
-           (this->minOpaque == rhs.minOpaque) &&
-           (this->maxOpaque == rhs.maxOpaque);
-  }
+  bool operator==(const ChannelBufProps &rhs) const;
 };
 
 /// Custom specialization of llvm::hash_value for ChannelBufProps. Converts the
@@ -113,6 +100,12 @@ struct ChannelBufProps {
 // NOLINTNEXTLINE(readability-identifier-naming)
 llvm::hash_code hash_value(const ChannelBufProps &props);
 } // namespace dynamatic
+
+/// Prints the buffering properties as two closed or semi-open intervals
+/// (depending on whether maximum are defined), one for tranparent slots and one
+/// for opaque slots.
+std::ostream &operator<<(std::ostream &os,
+                         const dynamatic::ChannelBufProps &props);
 
 namespace mlir {
 namespace OpTrait {
