@@ -11,6 +11,7 @@ include "circt/Dialect/Handshake/Handshake.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinAttributeInterfaces.td"
 include "mlir/IR/EnumAttr.td"
+include "mlir/IR/OpBase.td"
 
 class Handshake_Attr<string name, string attrMnemonic, list<Trait> traits = []>
     : AttrDef<Handshake_Dialect, name, traits> {
@@ -123,24 +124,68 @@ def MemDependenceArrayAttr : Handshake_Attr<"MemDependenceArray", "deps"> {
 // Channel annotations for buffer placement
 //===----------------------------------------------------------------------===//
 
-def OpBufPropsAttr : Handshake_Attr<"OpBufProps", "opBufProps"> {
-  let summary = "Buffering properties for an operation's results (i.e., output channels)";
+def ChannelBufPropsAttr : Handshake_Attr<"ChannelBufProps", "channelBufProps"> {
+  let summary = "Buffering properties for a single channel";
   let description = [{
-    Holds information about all specific buffering properties attached to the
-    results (equivalently, the output channels) of an operation. In most
-    situations, users of this attribute should use the helper functions in
-    dynamatic/Support/BufferingStrategy.h to manipulate it, as its internal
-    data structure is not convenient to use.
+    Holds a set of buffering properties for a channel (i.e, an SSA value used
+    only once) that are meant to be read by the buffer placement pass and
+    constrain it in what kind of buffers it can place on the channel these
+    properties are attached to. These properties are (1) the minimum and maximum
+    number of transparent buffer slots placable on the channel, and (2) the
+    minimum and maximum number of opaque buffer slots placable on the channel.
 
-    The attribute tracks which buffering properties belong to which channel
-    using each operation result's index. Internally, it uses a list of pairs,
-    (index, properties) to store everything. A map would be more appropriate but
-    requires extra work. As of now, the attribute's verification method ensures
-    that result indices are unique in the list.
+    Users of this attribute may wish to interact with it through the
+    dynamatic::ChannelBufProps struct, which represents the same information and
+    is easier to manipulate than the raw MLIR attribute.
   }];
   
-  let parameters = (ins
-    ArrayRefParameter<"::std::pair<size_t, ::dynamatic::ChannelBufProps>">:$allChannelProps);
+  let parameters = (ins "unsigned":$minTrans,
+                        "std::optional<unsigned>":$maxTrans,
+                        "unsigned":$minOpaque,
+                        "std::optional<unsigned>":$maxOpaque);
+
+  let builders = [
+    AttrBuilder<(ins "dynamatic::ChannelBufProps&":$props), [{
+      return $_get(context, props.minTrans, props.maxTrans, props.minOpaque, 
+        props.maxOpaque);   
+    }]>
+  ];
+
+  let extraClassDeclaration = [{
+    /// Gets a ChannelBufProps instance that holds the same information as this
+    /// attribute for easier data manipulation.
+    inline dynamatic::ChannelBufProps getProps() {
+      return dynamatic::ChannelBufProps(getMinTrans(), getMaxTrans(),
+        getMinOpaque(), getMaxOpaque());
+    }
+  }];
+
+  let hasCustomAssemblyFormat = 1;  
+}
+
+def OpBufPropsAttr : Handshake_Attr<"OpBufProps", "opBufProps"> {
+  let summary = "Buffering properties for all channels defined by an operation";
+  let description = [{
+    Holds information about all specific buffering properties attached to the
+    channels defined by an operation. In most situations, users of this
+    attribute should use the helper functions in
+    dynamatic/Transforms/BufferPlacement/BufferingStrategy.h to manipulate it,
+    as its internal data structure is less convenient to use.
+
+    The attribute tracks which buffering properties belong to which channel
+    using each channel's (stringified) index in the definition list. Internally,
+    it uses a map from stringified index to buffering properties.
+  }];
+  
+  let parameters = (ins "mlir::DictionaryAttr":$channelProperties);
+
+  let builders = [
+    AttrBuilder<(ins 
+      "mlir::SmallVector<NamedAttribute>&":$channelProperties), [{
+      return $_get(context, 
+        mlir::DictionaryAttr::get(context, channelProperties));   
+    }]>
+  ];
 
   let hasCustomAssemblyFormat = 1;  
   let genVerifyDecl = 1;

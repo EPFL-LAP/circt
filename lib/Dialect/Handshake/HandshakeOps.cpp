@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -31,6 +32,7 @@
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
+#include <cctype>
 #include <set>
 
 using namespace circt;
@@ -1849,14 +1851,14 @@ Attribute MemDependenceAttr::parse(AsmParser &odsParser, Type odsType) {
   // Parse destination memory access
   std::string dstName;
   if (odsParser.parseLess() || odsParser.parseString(&dstName))
-    return Attribute();
+    return nullptr;
   auto dstAccess = StringAttr::get(ctx, dstName);
 
   // Parse loop depth
   unsigned loopDepth;
   if (odsParser.parseLParen() || odsParser.parseInteger<unsigned>(loopDepth) ||
       odsParser.parseRParen())
-    return Attribute();
+    return nullptr;
 
   // Parse dependence components if present
   SmallVector<DependenceComponentAttr> components;
@@ -1878,11 +1880,11 @@ Attribute MemDependenceAttr::parse(AsmParser &odsParser, Type odsType) {
 
     if (odsParser.parseCommaSeparatedList(parseDepComp) ||
         odsParser.parseRSquare())
-      return Attribute();
+      return nullptr;
   }
 
   if (odsParser.parseGreater())
-    return Attribute();
+    return nullptr;
   return MemDependenceAttr::get(ctx, dstAccess, loopDepth, components);
 }
 
@@ -1924,40 +1926,13 @@ llvm::hash_code dynamatic::hash_value(const ChannelBufProps &props) {
                                           props.minOpaque, props.maxOpaque));
 }
 
-// OpBufPropsAttr
-
-/// Returns the string corresponding to the interval's upper bound.
-static std::string printOptMax(std::optional<unsigned> maxSlots) {
-  return maxSlots.has_value() ? std::to_string(maxSlots.value()) + "]" : "inf)";
-}
-
-/// Prints the channel's buffering properties using the ODS printer.
-static void printChannelBufProps(AsmPrinter &odsPrinter,
-                                 const ChannelBufProps &props) {
-  odsPrinter << "[" << props.minTrans << "," << printOptMax(props.maxTrans)
-             << ", [" << props.minOpaque << "," << printOptMax(props.maxOpaque);
-}
-
-void OpBufPropsAttr::print(AsmPrinter &odsPrinter) const {
-  auto propsList = getAllChannelProps();
-  if (propsList.empty())
-    return;
-
-  for (auto &[resIdx, channelProps] : propsList.drop_back()) {
-    odsPrinter << resIdx << ": ";
-    printChannelBufProps(odsPrinter, channelProps);
-    odsPrinter << ", ";
-  }
-  auto &[resIdx, channelProps] = propsList.back();
-  odsPrinter << resIdx << ": ";
-  printChannelBufProps(odsPrinter, channelProps);
-}
+// ChannelBufPropsAttr
 
 /// Parses the maximum number of slots and fills the last argument with the
 /// parsed value (std::nullopt if not specified).
 static ParseResult parseMaxSlots(AsmParser &odsParser,
                                  std::optional<unsigned> &maxSlots) {
-  if (odsParser.parseKeyword("inf")) {
+  if (odsParser.parseOptionalKeyword("inf")) {
     unsigned parsedMaxSlots;
     // When there is a maximum, the interval is closed to the right
     if (odsParser.parseInteger(parsedMaxSlots) || odsParser.parseRSquare())
@@ -1975,82 +1950,110 @@ static ParseResult parseMaxSlots(AsmParser &odsParser,
   return success();
 }
 
-/// Parses channel buffering properties. Returns std::nullopt when failing to
-/// parse them, otherwise returns the properties.
-static std::optional<ChannelBufProps>
-parseChannelBufProps(AsmParser &odsParser) {
-
-  unsigned minTrans, minOpaque;
-  std::optional<unsigned> maxTrans, maxOpaque;
+Attribute ChannelBufPropsAttr::parse(AsmParser &odsParser, Type odsType) {
+  ChannelBufProps props;
 
   // Parse first interval (transparent slots)
-  if (odsParser.parseLSquare() || odsParser.parseInteger(minTrans) ||
-      odsParser.parseComma() || parseMaxSlots(odsParser, maxTrans))
-    return std::nullopt;
+  if (odsParser.parseLSquare() || odsParser.parseInteger(props.minTrans) ||
+      odsParser.parseComma() || parseMaxSlots(odsParser, props.maxTrans))
+    return nullptr;
 
   // Parse comma separating the two intervals
   if (odsParser.parseComma())
-    return std::nullopt;
+    return nullptr;
 
   // Parse second interval (opaque slots)
-  if (odsParser.parseLSquare() || odsParser.parseInteger(minOpaque) ||
-      odsParser.parseComma() || parseMaxSlots(odsParser, maxOpaque))
-    return std::nullopt;
+  if (odsParser.parseLSquare() || odsParser.parseInteger(props.minOpaque) ||
+      odsParser.parseComma() || parseMaxSlots(odsParser, props.maxOpaque))
+    return nullptr;
 
-  return ChannelBufProps(minTrans, maxTrans, minOpaque, maxOpaque);
+  return ChannelBufPropsAttr::get(odsParser.getContext(), props);
+}
+
+/// Returns the string corresponding to the interval's upper bound.
+static std::string printOptMax(std::optional<unsigned> maxSlots) {
+  return maxSlots.has_value() ? std::to_string(maxSlots.value()) + "]" : "inf)";
+}
+
+void ChannelBufPropsAttr::print(AsmPrinter &odsPrinter) const {
+  odsPrinter << "[" << getMinTrans() << "," << printOptMax(getMaxTrans())
+             << ", [" << getMinOpaque() << "," << printOptMax(getMaxOpaque());
+}
+
+// OpBufPropsAttr
+
+void OpBufPropsAttr::print(AsmPrinter &odsPrinter) const {
+  DictionaryAttr propsList = getChannelProperties();
+  if (propsList.empty()) {
+    odsPrinter << "{}";
+    return;
+  }
+
+  odsPrinter << "{";
+  size_t numProps = propsList.size();
+  for (auto [idx, attr] : llvm::enumerate(propsList)) {
+    odsPrinter << attr.getName() << ": ";
+    attr.getValue().cast<ChannelBufPropsAttr>().print(odsPrinter);
+    if (idx != numProps - 1)
+      odsPrinter << ", ";
+  }
+  odsPrinter << "}";
+}
+
+/// Attempts to convert the string attribute to an unsigned number. Returns it
+/// on success, or std::nullopt on failure.
+static std::optional<size_t> toIdx(std::string str) {
+  if (std::any_of(str.begin(), str.end(),
+                  [](char c) { return !std::isdigit(c); }))
+    return {};
+  return stoi(str);
 }
 
 Attribute OpBufPropsAttr::parse(AsmParser &odsParser, Type odsType) {
-  SmallVector<std::pair<size_t, ChannelBufProps>> allChannelProps;
+  SmallVector<NamedAttribute> channelProperties;
+  MLIRContext *ctx = odsParser.getContext();
+
   auto parseChannelProps = [&]() -> ParseResult {
     // Parse the channel index
-    size_t channelIdx;
-    if (odsParser.parseInteger(channelIdx))
+    std::string channelStr;
+    if (odsParser.parseString(&channelStr) || !toIdx(channelStr).has_value() ||
+        odsParser.parseColon())
       return failure();
 
     // Parse the channel properties
-    auto channelProps = parseChannelBufProps(odsParser);
-    if (!channelProps.has_value())
+    Attribute channel = ChannelBufPropsAttr::parse(odsParser, odsType);
+    if (!channel)
       return failure();
 
-    allChannelProps.push_back(std::make_pair(channelIdx, channelProps.value()));
+    channelProperties.push_back(
+        NamedAttribute(StringAttr::get(ctx, channelStr), channel));
     return success();
   };
 
   // The attribute is printed as a comma-separated list of named channel
-  // properties
-  if (odsParser.parseCommaSeparatedList(parseChannelProps))
-    return Attribute();
+  // properties surrounded by brackets
+  if (odsParser.parseLBrace() ||
+      odsParser.parseCommaSeparatedList(parseChannelProps) ||
+      odsParser.parseRBrace())
+    return nullptr;
 
-  return OpBufPropsAttr::get(odsParser.getContext(), allChannelProps);
+  return OpBufPropsAttr::get(ctx, channelProperties);
 }
 
-LogicalResult OpBufPropsAttr::verify(
-    function_ref<InFlightDiagnostic()> emitError,
-    ArrayRef<std::pair<size_t, ChannelBufProps>> allChannelProps) {
+LogicalResult
+OpBufPropsAttr::verify(function_ref<InFlightDiagnostic()> emitError,
+                       DictionaryAttr channelProperties) {
+  for (const NamedAttribute &attr : channelProperties) {
+    // Name must represent a number
+    std::optional<size_t> idx = toIdx(attr.getName().str());
+    if (!idx.has_value())
+      return emitError() << "map keys must represent indices, but got "
+                         << attr.getName();
 
-  std::set<size_t> allIndices;
-  for (auto &[resIdx, props] : allChannelProps) {
-    // All indices in the array (first element of each pair) must be unique
-    if (auto [_, newIdx] = allIndices.insert(resIdx); !newIdx)
-      return emitError() << "multiple channel properties for result " << newIdx;
-
-    // Check that the maximum number of transparent slots is higher than the
-    // minimum
-    if (props.maxTrans.has_value() and props.maxTrans.value() < props.minTrans)
-      return emitError()
-             << "Maximum number of allowed trans slots ("
-             << props.maxTrans.value()
-             << ") is smaller than minimum number of transparent slots ("
-             << props.minTrans << ")";
-
-    // Check that the maximum number of opaque slots is higher than the minimum
-    if (props.maxOpaque.has_value() and
-        props.maxOpaque.value() < props.minOpaque)
-      return emitError() << "Maximum number of allowed opaque slots ("
-                         << props.maxOpaque.value()
-                         << ") is smaller than minimum number of opaque slots ("
-                         << props.minOpaque << ")";
+    // Value must be channel buffering properties
+    if (!attr.getValue().isa<ChannelBufPropsAttr>())
+      return emitError() << "map values must represent channel buffering "
+                            "properties";
   }
   return success();
 }

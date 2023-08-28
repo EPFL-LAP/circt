@@ -966,7 +966,7 @@ def DynamaticLoadOp : Handshake_Op<"d_load", [
 
     Example:
     ```mlir
-    %dataToSucc, %addrToMem = d_load [%addr] %dataFromMem : i32, index
+    %addrToMem, %dataToSucc = d_load [%addrFromPred] %dataFromMem : i32, index
     ```
   }];
 
@@ -998,7 +998,7 @@ def DynamaticStoreOp : Handshake_Op<"d_store", [
 
     Example:
     ```mlir
-    %dataToMem, %addrToMem = d_store [%addr] %dataToStore : i32, index
+     %addrToMem, %dataToMem = d_store [%addrFromPred] %dataFromPred : i32, index
     ```
   }];
 
