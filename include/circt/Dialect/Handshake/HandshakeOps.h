@@ -69,13 +69,13 @@ namespace dynamatic {
 /// Specifies how a handshake channel (i.e. a SSA value used once) may be
 /// buffered. Backing data-structure for the ChannelBufPropsAttr attribute.
 struct ChannelBufProps {
-  /// Minimum number of transparent slots allowed on the channel
+  /// Minimum number of transparent slots allowed on the channel (inclusive).
   unsigned minTrans;
-  /// Maximum number of transparent slots allowed on the channel
+  /// Maximum number of transparent slots allowed on the channel (inclusive).
   std::optional<unsigned> maxTrans;
-  /// Minimum number of opaque slots allowed on the channel
+  /// Minimum number of opaque slots allowed on the channel (inclusive).
   unsigned minOpaque;
-  /// Maximum number of opaque slots allowed on the channel
+  /// Maximum number of opaque slots allowed on the channel (inclusive).
   std::optional<unsigned> maxOpaque;
 
   /// Simple constructor that takes the same parameters as the struct's members.
@@ -89,6 +89,10 @@ struct ChannelBufProps {
   /// Determines whether these buffering properties are satisfiable i.e.,
   /// whether it's possible to create a buffer that respects them.
   bool isSatisfiable() const;
+
+  /// Determines whether these buffering properties forbid the placement of any
+  /// buffer on the associated channel.
+  bool isBufferizable() const;
 
   /// Computes member-wise equality.
   bool operator==(const ChannelBufProps &rhs) const;

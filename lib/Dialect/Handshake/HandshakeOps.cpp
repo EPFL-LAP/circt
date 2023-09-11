@@ -1898,8 +1898,13 @@ ChannelBufProps::ChannelBufProps(unsigned minTrans,
       maxOpaque(maxOpaque){};
 
 bool ChannelBufProps::isSatisfiable() const {
-  return (!maxTrans.has_value() || maxTrans.value() > minTrans) &&
-         (!maxOpaque.has_value() || maxOpaque.value() > minOpaque);
+  return (!maxTrans.has_value() || *maxTrans >= minTrans) &&
+         (!maxOpaque.has_value() || *maxOpaque >= minOpaque);
+}
+
+bool ChannelBufProps::isBufferizable() const {
+  return !maxTrans.has_value() || *maxTrans != 0 || !maxOpaque.has_value() ||
+         *maxOpaque != 0;
 }
 
 bool ChannelBufProps::operator==(const ChannelBufProps &rhs) const {
