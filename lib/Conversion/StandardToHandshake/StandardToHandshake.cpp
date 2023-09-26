@@ -1110,23 +1110,17 @@ HandshakeLowering::addBranchOps(ConversionPatternRewriter &rewriter) {
     // Insert a branch-like operation for each live-out and replace the original
     // branch operand value in successor blocks with the result(s) of the new
     // operation
-    DenseMap<Value, Operation *> branches;
     for (Value val : getBranchOperands(termOp)) {
 
-      // Create a branch-like operation for the branch operand, or re-use one
-      // created earlier for that same value
+      // Create a branch-like operation for the branch operand
       Operation *newOp = nullptr;
-      if (auto branchOp = branches.find(val); branchOp != branches.end())
-        newOp = branchOp->getSecond();
-      else {
-        if (condValue)
-          newOp = rewriter.create<handshake::ConditionalBranchOp>(
-              termOp->getLoc(), condValue, val);
-        else
-          newOp = rewriter.create<handshake::BranchOp>(termOp->getLoc(), val);
-        branches.insert(std::make_pair(val, newOp));
-      }
+      if (condValue)
+        newOp = rewriter.create<handshake::ConditionalBranchOp>(
+            termOp->getLoc(), condValue, val);
+      else
+        newOp = rewriter.create<handshake::BranchOp>(termOp->getLoc(), val);
 
+      // Connect the newly created branch's output with its successors
       for (int j = 0, e = block.getNumSuccessors(); j < e; ++j) {
         Block *succ = block.getSuccessor(j);
 
