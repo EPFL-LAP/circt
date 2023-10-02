@@ -5,7 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
 //
+// This file includes modifications made as part of the Dynamatic project.
+// See https://github.com/EPFL-LAP/dynamatic.
+//
+//===----------------------------------------------------------------------===//
+//
 // This is the main Standard to Handshake Conversion Pass Implementation.
+//
 //
 //===----------------------------------------------------------------------===//
 

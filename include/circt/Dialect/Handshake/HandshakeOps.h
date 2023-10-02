@@ -6,6 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// This file includes modifications made as part of the Dynamatic project.
+// See https://github.com/EPFL-LAP/dynamatic.
+//
+//===----------------------------------------------------------------------===//
+//
 // This file defines convenience types for working with handshake operations.
 //
 //===----------------------------------------------------------------------===//

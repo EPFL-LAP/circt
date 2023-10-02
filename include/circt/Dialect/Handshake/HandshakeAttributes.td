@@ -1,5 +1,16 @@
 //===- HandshakeAttributes.td - Attributes for Handshake ---*- tablegen -*-===//
 //
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// This file includes modifications made as part of the Dynamatic project.
+// See https://github.com/EPFL-LAP/dynamatic.
+//
+//===----------------------------------------------------------------------===//
+//
 // This file defines Handshake dialect specific attributes.
 //
 //===----------------------------------------------------------------------===//
