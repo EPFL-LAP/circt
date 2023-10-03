@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/FunctionImplementation.h"
@@ -1898,9 +1899,10 @@ Attribute MemDependenceAttr::parse(AsmParser &odsParser, Type odsType) {
 ChannelBufProps::ChannelBufProps(unsigned minTrans,
                                  std::optional<unsigned> maxTrans,
                                  unsigned minOpaque,
-                                 std::optional<unsigned> maxOpaque)
+                                 std::optional<unsigned> maxOpaque,
+                                 double delay)
     : minTrans(minTrans), maxTrans(maxTrans), minOpaque(minOpaque),
-      maxOpaque(maxOpaque){};
+      maxOpaque(maxOpaque), delay(delay){};
 
 bool ChannelBufProps::isSatisfiable() const {
   return (!maxTrans.has_value() || *maxTrans >= minTrans) &&
@@ -1977,6 +1979,11 @@ Attribute ChannelBufPropsAttr::parse(AsmParser &odsParser, Type odsType) {
       odsParser.parseComma() || parseMaxSlots(odsParser, props.maxOpaque))
     return nullptr;
 
+  // Parse channel delay
+  mlir::FloatAttr delay;
+  if (odsParser.parseComma() || odsParser.parseAttribute(delay))
+    return nullptr;
+
   return ChannelBufPropsAttr::get(odsParser.getContext(), props);
 }
 
@@ -1987,7 +1994,8 @@ static std::string printOptMax(std::optional<unsigned> maxSlots) {
 
 void ChannelBufPropsAttr::print(AsmPrinter &odsPrinter) const {
   odsPrinter << "[" << getMinTrans() << "," << printOptMax(getMaxTrans())
-             << ", [" << getMinOpaque() << "," << printOptMax(getMaxOpaque());
+             << ", [" << getMinOpaque() << "," << printOptMax(getMaxOpaque())
+             << ", " << getDelay().getValueAsDouble();
 }
 
 // OpBufPropsAttr

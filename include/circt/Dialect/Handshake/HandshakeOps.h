@@ -82,6 +82,8 @@ struct ChannelBufProps {
   unsigned minOpaque;
   /// Maximum number of opaque slots allowed on the channel (inclusive).
   std::optional<unsigned> maxOpaque;
+  /// Channel delay
+  double delay;
 
   /// Simple constructor that takes the same parameters as the struct's members.
   /// By default, all parameters are set so that the channel is "unconstrained"
@@ -89,7 +91,8 @@ struct ChannelBufProps {
   ChannelBufProps(unsigned minTrans = 0,
                   std::optional<unsigned> maxTrans = std::nullopt,
                   unsigned minOpaque = 0,
-                  std::optional<unsigned> maxOpaque = std::nullopt);
+                  std::optional<unsigned> maxOpaque = std::nullopt,
+                  double delay = 0.0);
 
   /// Determines whether these buffering properties are satisfiable i.e.,
   /// whether it's possible to create a buffer that respects them.

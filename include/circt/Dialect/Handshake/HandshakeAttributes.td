@@ -153,12 +153,13 @@ def ChannelBufPropsAttr : Handshake_Attr<"ChannelBufProps", "channelBufProps"> {
   let parameters = (ins "unsigned":$minTrans,
                         "std::optional<unsigned>":$maxTrans,
                         "unsigned":$minOpaque,
-                        "std::optional<unsigned>":$maxOpaque);
+                        "std::optional<unsigned>":$maxOpaque,
+                        "FloatAttr":$delay);
 
   let builders = [
     AttrBuilder<(ins "dynamatic::ChannelBufProps&":$props), [{
       return $_get(context, props.minTrans, props.maxTrans, props.minOpaque, 
-        props.maxOpaque);   
+        props.maxOpaque, mlir::FloatAttr::get(mlir::FloatType(), props.delay));   
     }]>
   ];
 
@@ -167,7 +168,7 @@ def ChannelBufPropsAttr : Handshake_Attr<"ChannelBufProps", "channelBufProps"> {
     /// attribute for easier data manipulation.
     inline dynamatic::ChannelBufProps getProps() {
       return dynamatic::ChannelBufProps(getMinTrans(), getMaxTrans(),
-        getMinOpaque(), getMaxOpaque());
+        getMinOpaque(), getMaxOpaque(), getDelay().getValueAsDouble());
     }
   }];
 
