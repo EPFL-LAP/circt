@@ -159,7 +159,8 @@ def ChannelBufPropsAttr : Handshake_Attr<"ChannelBufProps", "channelBufProps"> {
   let builders = [
     AttrBuilder<(ins "dynamatic::ChannelBufProps&":$props), [{
       return $_get(context, props.minTrans, props.maxTrans, props.minOpaque, 
-        props.maxOpaque, mlir::FloatAttr::get(mlir::FloatType(), props.delay));   
+        props.maxOpaque, mlir::FloatAttr::get(mlir::FloatType::getF64(context),
+        props.delay));   
     }]>
   ];
 
