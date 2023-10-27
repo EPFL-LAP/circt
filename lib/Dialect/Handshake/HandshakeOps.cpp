@@ -1943,20 +1943,20 @@ llvm::hash_code dynamatic::hash_value(const ChannelBufProps &props) {
 static ParseResult parseMaxSlots(AsmParser &odsParser,
                                  std::optional<unsigned> &maxSlots) {
   if (odsParser.parseOptionalKeyword("inf")) {
+    // There is a maximum
     unsigned parsedMaxSlots;
-    // When there is a maximum, the interval is closed to the right
-    if (odsParser.parseInteger(parsedMaxSlots) || odsParser.parseRSquare())
+    if (odsParser.parseInteger(parsedMaxSlots))
       return failure();
     maxSlots = parsedMaxSlots;
-    return success();
+  } else {
+    // No maximum
+    maxSlots = std::nullopt;
   }
 
-  // When there is no maximum, the interval is open to the right
-  if (odsParser.parseRParen())
+  // Close the interval
+  if (odsParser.parseRSquare())
     return failure();
 
-  // No maximum
-  maxSlots = std::nullopt;
   return success();
 }
 
@@ -1982,7 +1982,7 @@ Attribute ChannelBufPropsAttr::parse(AsmParser &odsParser, Type odsType) {
 
 /// Returns the string corresponding to the interval's upper bound.
 static std::string printOptMax(std::optional<unsigned> maxSlots) {
-  return maxSlots.has_value() ? std::to_string(maxSlots.value()) + "]" : "inf)";
+  return maxSlots.has_value() ? std::to_string(maxSlots.value()) + "]" : "inf]";
 }
 
 void ChannelBufPropsAttr::print(AsmPrinter &odsPrinter) const {
