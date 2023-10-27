@@ -142,8 +142,11 @@ def ChannelBufPropsAttr : Handshake_Attr<"ChannelBufProps", "channelBufProps"> {
     only once) that are meant to be read by the buffer placement pass and
     constrain it in what kind of buffers it can place on the channel these
     properties are attached to. These properties are (1) the minimum and maximum
-    number of transparent buffer slots placable on the channel, and (2) the
-    minimum and maximum number of opaque buffer slots placable on the channel.
+    number of transparent buffer slots placable on the channel, (2) the minimum
+    and maximum number of opaque buffer slots placable on the channel, and (3)
+    the channel's combinational delay expressed as a pair of pre-buffer
+    (`inDelay`) and post-buffer (`outDelay`) delays as well as the total channel
+    delay (`delay`) when it is unbuffered, all in ns.
 
     Users of this attribute may wish to interact with it through the
     dynamatic::ChannelBufProps struct, which represents the same information and
@@ -153,12 +156,19 @@ def ChannelBufPropsAttr : Handshake_Attr<"ChannelBufProps", "channelBufProps"> {
   let parameters = (ins "unsigned":$minTrans,
                         "std::optional<unsigned>":$maxTrans,
                         "unsigned":$minOpaque,
-                        "std::optional<unsigned>":$maxOpaque);
+                        "std::optional<unsigned>":$maxOpaque,
+                        "mlir::FloatAttr":$inDelay,
+                        "mlir::FloatAttr":$outDelay,
+                        "mlir::FloatAttr":$delay
+                        );
 
   let builders = [
     AttrBuilder<(ins "dynamatic::ChannelBufProps&":$props), [{
       return $_get(context, props.minTrans, props.maxTrans, props.minOpaque, 
-        props.maxOpaque);   
+        props.maxOpaque, 
+        FloatAttr::get(mlir::Float32Type::get(context), props.inDelay), 
+        FloatAttr::get(mlir::Float32Type::get(context), props.outDelay),
+        FloatAttr::get(mlir::Float32Type::get(context), props.delay));
     }]>
   ];
 
@@ -167,7 +177,8 @@ def ChannelBufPropsAttr : Handshake_Attr<"ChannelBufProps", "channelBufProps"> {
     /// attribute for easier data manipulation.
     inline dynamatic::ChannelBufProps getProps() {
       return dynamatic::ChannelBufProps(getMinTrans(), getMaxTrans(),
-        getMinOpaque(), getMaxOpaque());
+        getMinOpaque(), getMaxOpaque(), getInDelay().getValueAsDouble(),
+        getOutDelay().getValueAsDouble(), getDelay().getValueAsDouble());
     }
   }];
 

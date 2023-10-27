@@ -1898,9 +1898,11 @@ Attribute MemDependenceAttr::parse(AsmParser &odsParser, Type odsType) {
 ChannelBufProps::ChannelBufProps(unsigned minTrans,
                                  std::optional<unsigned> maxTrans,
                                  unsigned minOpaque,
-                                 std::optional<unsigned> maxOpaque)
+                                 std::optional<unsigned> maxOpaque,
+                                 double inDelay, double outDelay, double delay)
     : minTrans(minTrans), maxTrans(maxTrans), minOpaque(minOpaque),
-      maxOpaque(maxOpaque){};
+      maxOpaque(maxOpaque), inDelay(inDelay), outDelay(outDelay),
+      delay(delay){};
 
 bool ChannelBufProps::isSatisfiable() const {
   return (!maxTrans.has_value() || *maxTrans >= minTrans) &&
@@ -1915,25 +1917,8 @@ bool ChannelBufProps::isBufferizable() const {
 bool ChannelBufProps::operator==(const ChannelBufProps &rhs) const {
   return (this->minTrans == rhs.minTrans) && (this->maxTrans == rhs.maxTrans) &&
          (this->minOpaque == rhs.minOpaque) &&
-         (this->maxOpaque == rhs.maxOpaque);
-}
-
-std::ostream &operator<<(std::ostream &os, const ChannelBufProps &props) {
-  std::string maxTransStr = props.maxTrans.has_value()
-                                ? (std::to_string(props.maxTrans.value()) + "]")
-                                : "inf)";
-  std::string maxOpaqueStr =
-      props.maxOpaque.has_value()
-          ? (std::to_string(props.maxOpaque.value()) + "]")
-          : "inf)";
-  os << "T: [" << props.minTrans << ", " << maxTransStr << ", O: ["
-     << props.minOpaque << ", " << maxOpaqueStr;
-  return os;
-}
-
-llvm::hash_code dynamatic::hash_value(const ChannelBufProps &props) {
-  return llvm::hash_value(std::make_tuple(props.minTrans, props.maxTrans,
-                                          props.minOpaque, props.maxOpaque));
+         (this->maxOpaque == rhs.maxOpaque) && (this->inDelay == rhs.inDelay) &&
+         (this->outDelay == rhs.outDelay) && (this->delay == rhs.delay);
 }
 
 // ChannelBufPropsAttr
@@ -1977,17 +1962,21 @@ Attribute ChannelBufPropsAttr::parse(AsmParser &odsParser, Type odsType) {
       odsParser.parseComma() || parseMaxSlots(odsParser, props.maxOpaque))
     return nullptr;
 
+  // Parse the delays
+  if (odsParser.parseComma() || odsParser.parseFloat(props.inDelay) ||
+      odsParser.parseComma() || odsParser.parseFloat(props.outDelay) ||
+      odsParser.parseComma() || odsParser.parseFloat(props.delay))
+    return nullptr;
+
   return ChannelBufPropsAttr::get(odsParser.getContext(), props);
 }
 
-/// Returns the string corresponding to the interval's upper bound.
-static std::string printOptMax(std::optional<unsigned> maxSlots) {
-  return maxSlots.has_value() ? std::to_string(maxSlots.value()) + "]" : "inf]";
-}
-
 void ChannelBufPropsAttr::print(AsmPrinter &odsPrinter) const {
-  odsPrinter << "[" << getMinTrans() << "," << printOptMax(getMaxTrans())
-             << ", [" << getMinOpaque() << "," << printOptMax(getMaxOpaque());
+  odsPrinter << "[" << getMinTrans() << "," << getMaxStr(getMaxTrans()) << ", ["
+             << getMinOpaque() << "," << getMaxStr(getMaxOpaque()) << ", "
+             << getInDelay().getValueAsDouble() << ", "
+             << getOutDelay().getValueAsDouble() << ", "
+             << getDelay().getValueAsDouble();
 }
 
 // OpBufPropsAttr
