@@ -29,6 +29,29 @@ class Handshake_Attr<string name, string attrMnemonic, list<Trait> traits = []>
   let mnemonic = attrMnemonic;
 }
 
+//===----------------------------------------------------------------------===//
+// Naming annotations
+//===----------------------------------------------------------------------===//
+
+def NameAttr : Handshake_Attr<"Name", "name"> {
+  let summary = "A unique name given to an operation";
+  let description = [{
+    This holds a unique name given to an operation. This attribute is a simple
+    wrapper around a `StringAttr`.
+  }];
+  
+  let parameters = (ins "mlir::StringAttr":$name);
+  let builders = [
+    AttrBuilder<(ins "mlir::StringRef":$name),
+      "return $_get(context, mlir::StringAttr::get(context, name));">,
+  ];
+  let assemblyFormat = "`<` $name `>`";
+}
+
+//===----------------------------------------------------------------------===//
+// Memory annotations
+//===----------------------------------------------------------------------===//
+
 // Define an enumeration (along with a corresponding attribute) made up of two
 // possible cases to represent the type (load or store) of a memory access.  
 def AccessCaseLoad: I32EnumAttrCase<"Load", 0>;
