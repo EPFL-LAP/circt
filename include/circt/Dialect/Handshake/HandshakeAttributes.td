@@ -24,9 +24,126 @@ include "mlir/IR/BuiltinAttributeInterfaces.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpBase.td"
 
+//===----------------------------------------------------------------------===//
+// Attribute classes 
+//===----------------------------------------------------------------------===//
+
+/// Base class for all Handshake attributes.
 class Handshake_Attr<string name, string attrMnemonic, list<Trait> traits = []>
     : AttrDef<Handshake_Dialect, name, traits> {
   let mnemonic = attrMnemonic;
+}
+
+/// Helper base class for attributes that just act as containers around an
+/// attribute type semantically attached to operands.
+///
+/// Implementors only need to define the `extraClassDeclaration` member with a
+/// type alias named `OperandAttr` that points to the operand attribute the
+/// container attribute "wraps". For example:
+/// 
+/// let extraClassDeclaration = [{
+///   using OperandAttr = ::circt::handshake::ChannelBufPropsAttr;
+/// }];
+class OperandContainerAttr<string name, string attrMnemonic, list<Trait> traits = []>
+    : Handshake_Attr<name, attrMnemonic, traits> {
+
+  /// A dictionnary from operand index (encoded as string) to an operand
+  /// attribute of a specific type
+  let parameters = (ins "mlir::DictionaryAttr":$operandAttributes);
+
+  let builders = [
+    AttrBuilder<(ins 
+      "mlir::SmallVector<mlir::NamedAttribute>&":$operandAttributes), [{
+      return $_get(context, 
+        mlir::DictionaryAttr::get(context, operandAttributes));   
+    }]>
+  ];
+
+  /// Automatically implemented.
+  let genVerifyDecl = 1;
+  /// Automatically implemented.
+  let hasCustomAssemblyFormat = 1;
+
+  let extraClassDefinition = [{
+    /// Attempts to convert the string attribute to an unsigned number. Returns it
+    /// on success, or std::nullopt on failure.
+    static inline std::optional<size_t> toIdx(std::string str) {
+      if (std::any_of(str.begin(), str.end(),
+                      [](char c) { return !std::isdigit(c); }))
+        return {};
+      return stoi(str);
+    }
+
+    /// Automatically implemented print method.
+    void $cppClass::print(mlir::AsmPrinter &odsPrinter) const {
+      mlir::DictionaryAttr operandAttrs = getOperandAttributes();
+      if (operandAttrs.empty()) {
+        odsPrinter << "{}";
+        return;
+      }
+
+      odsPrinter << "{";
+      size_t numProps = operandAttrs.size();
+      for (auto [idx, attr] : llvm::enumerate(operandAttrs)) {
+        odsPrinter << attr.getName() << ": ";
+        attr.getValue().cast<$cppClass::OperandAttr>().print(odsPrinter);
+        if (idx != numProps - 1)
+          odsPrinter << ", ";
+      }
+      odsPrinter << "}";
+    }
+
+    /// Automatically implemented parse function.
+    mlir::Attribute $cppClass::parse(mlir::AsmParser &odsParser, mlir::Type odsType) {
+      mlir::SmallVector<mlir::NamedAttribute> operandAttrs;
+      mlir::MLIRContext *ctx = odsParser.getContext();
+
+      auto parseChannelProps = [&]() -> mlir::ParseResult {
+        // Parse the channel index
+        std::string channelStr;
+        if (odsParser.parseString(&channelStr) || !toIdx(channelStr).has_value() ||
+            odsParser.parseColon())
+          return failure();
+
+        // Parse the operand attribute
+        mlir::Attribute channel = $cppClass::OperandAttr::parse(odsParser, odsType);
+        if (!channel)
+          return failure();
+
+        // Accumulate in the list
+        operandAttrs.push_back(
+            mlir::NamedAttribute(StringAttr::get(ctx, channelStr), channel));
+        return success();
+      };
+
+      // The attribute is printed as a comma-separated list of named channel
+      // properties surrounded by brackets
+      if (odsParser.parseLBrace() ||
+          odsParser.parseCommaSeparatedList(parseChannelProps) ||
+          odsParser.parseRBrace())
+        return nullptr;
+
+      return $cppClass::get(ctx, operandAttrs);
+    }
+
+    /// Automatically implemented verify method.
+    LogicalResult
+    $cppClass::verify(function_ref<InFlightDiagnostic()> emitError,
+                      mlir::DictionaryAttr operandAttrs) {
+      for (const mlir::NamedAttribute &attr : operandAttrs) {
+        // Name must represent a number
+        std::optional<size_t> idx = toIdx(attr.getName().str());
+        if (!idx.has_value())
+          return emitError() << "map keys must represent indices, but got "
+                            << attr.getName();
+
+        // Value must be channel buffering properties
+        if (!attr.getValue().isa<$cppClass::OperandAttr>())
+          return emitError() << "map values are not of the correct type";
+      }
+      return success();
+    }
+  }];
 }
 
 //===----------------------------------------------------------------------===//
@@ -155,11 +272,11 @@ def MemDependenceArrayAttr : Handshake_Attr<"MemDependenceArray", "deps"> {
 }
 
 //===----------------------------------------------------------------------===//
-// Channel annotations for buffer placement
+// Buffer placement annotations
 //===----------------------------------------------------------------------===//
 
 def ChannelBufPropsAttr : Handshake_Attr<"ChannelBufProps", "channelBufProps"> {
-  let summary = "Buffering properties for a single channel";
+  let summary = "Buffering properties of a single channel";
   let description = [{
     Holds a set of buffering properties for a channel (i.e, an SSA value used
     only once) that are meant to be read by the buffer placement pass and
@@ -195,7 +312,12 @@ def ChannelBufPropsAttr : Handshake_Attr<"ChannelBufProps", "channelBufProps"> {
     }]>
   ];
 
+  let hasCustomAssemblyFormat = 1;  
+
   let extraClassDeclaration = [{
+    /// Container attribute corresponding to this operand attribute
+    using ContainerAttr = ::circt::handshake::ChannelBufPropsContainerAttr;
+
     /// Gets a ChannelBufProps instance that holds the same information as this
     /// attribute for easier data manipulation.
     inline dynamatic::ChannelBufProps getProps() {
@@ -204,36 +326,20 @@ def ChannelBufPropsAttr : Handshake_Attr<"ChannelBufProps", "channelBufProps"> {
         getOutDelay().getValueAsDouble(), getDelay().getValueAsDouble());
     }
   }];
-
-  let hasCustomAssemblyFormat = 1;  
 }
 
-def OpBufPropsAttr : Handshake_Attr<"OpBufProps", "opBufProps"> {
-  let summary = "Buffering properties for all channels defined by an operation";
+def ChannelBufPropsContainerAttr : OperandContainerAttr<"ChannelBufPropsContainer", "bufProps"> {
+  let summary = "Container around the `ChannelBufPropsAttr` operand attribute.";
   let description = [{
-    Holds information about all specific buffering properties attached to the
-    channels defined by an operation. In most situations, users of this
-    attribute should use the helper functions in
-    dynamatic/Transforms/BufferPlacement/BufferingStrategy.h to manipulate it,
-    as its internal data structure is less convenient to use.
-
-    The attribute tracks which buffering properties belong to which channel
-    using each channel's (stringified) index in the definition list. Internally,
-    it uses a map from stringified index to buffering properties.
+    Maps operands of an operation to their `ChannelBufPropsAttr` attribute, if
+    it exists. Never really needs to be interacted with by user code beside the 
+    `dynamatic/Support/OperandAttribute.h` header.  
   }];
-  
-  let parameters = (ins "mlir::DictionaryAttr":$channelProperties);
 
-  let builders = [
-    AttrBuilder<(ins 
-      "mlir::SmallVector<NamedAttribute>&":$channelProperties), [{
-      return $_get(context, 
-        mlir::DictionaryAttr::get(context, channelProperties));   
-    }]>
-  ];
-
-  let hasCustomAssemblyFormat = 1;  
-  let genVerifyDecl = 1;
+  let extraClassDeclaration = [{
+    /// Operand attribute corresponding to this container attribute
+    using OperandAttr = ::circt::handshake::ChannelBufPropsAttr;
+  }];
 }
 
 #endif // CIRCT_DIALECT_HANDSHAKE_ATTRIBUTES_TD
