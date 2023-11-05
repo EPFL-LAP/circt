@@ -35,11 +35,15 @@
 #include "mlir/Transforms/InliningUtils.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <cctype>
 #include <set>
 
+using namespace mlir;
 using namespace circt;
 using namespace circt::handshake;
 using namespace dynamatic;
@@ -1466,163 +1470,128 @@ LogicalResult ReturnOp::verify() {
   return success();
 }
 
-//===----------------------------------------------------------------------===//
-// Dynamatic operations
-//===----------------------------------------------------------------------===//
+//============================================================================//
+// DYNAMATIC OPERATIONS
+//============================================================================//
 
+//===----------------------------------------------------------------------===//
 // MemoryControllerOp
+//===----------------------------------------------------------------------===//
 
-void MemoryControllerOp::build(
-    OpBuilder &builder, OperationState &result, Value memref, ValueRange inputs,
-    SmallVector<SmallVector<AccessTypeEnum>> &accesses, int id) {
+/// FindS the type of operation that produces the input by backtracking the
+/// def-use chain through potential bitwidth modification and/or forK
+/// operations.
+static Operation *backtrackToMemInput(Value input) {
+  Operation *inputOp = input.getDefiningOp();
+  while (llvm::isa_and_nonnull<arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
+                               handshake::ForkOp>(inputOp))
+    inputOp = inputOp->getOperand(0).getDefiningOp();
+  return inputOp;
+}
+
+void MemoryControllerOp::build(OpBuilder &odsBuilder, OperationState &odsState,
+                               Value memref, ValueRange inputs) {
   // Memory operands
-  result.addOperands(memref);
-  result.addOperands(inputs);
+  odsState.addOperands(memref);
+  odsState.addOperands(inputs);
 
-  // Convert the list of memory accesses to a list of attributes, and count the
-  // total number of loads in the process
+  // Count the number of loads connected to the memory controller (to derive the
+  // number of results necessary)
   unsigned ldCount = 0;
-  SmallVector<Attribute> accessesAttr;
-  for (auto &blockAccesses : accesses) {
-    SmallVector<Attribute> blockAccessesAttr;
-    for (auto &op : blockAccesses) {
-      if (op == AccessTypeEnum::Load)
-        ldCount++;
-      blockAccessesAttr.push_back(
-          AccessTypeEnumAttr::get(builder.getContext(), op));
-    }
-    accessesAttr.push_back(builder.getArrayAttr(blockAccessesAttr));
+  for (auto [inputIdx, input] : llvm::enumerate(inputs)) {
+    Operation *inputOp = backtrackToMemInput(input);
+    assert(inputOp && "failed to identify memory input");
+
+    // Check if the input comes from a load operation
+    if (isa<handshake::DynamaticLoadOp>(inputOp))
+      ++ldCount;
   }
 
   // Data outputs (get their type from memref)
   auto memrefType = memref.getType().cast<MemRefType>();
-  result.types.append(ldCount, memrefType.getElementType());
-  result.types.push_back(builder.getNoneType());
-
-  // Memory interface attributes
-  Type i32Type = builder.getIntegerType(32);
-  result.addAttribute("accesses", builder.getArrayAttr(accessesAttr));
-  result.addAttribute("id", builder.getIntegerAttr(i32Type, id));
+  odsState.types.append(ldCount, memrefType.getElementType());
+  odsState.types.push_back(odsBuilder.getNoneType());
 }
+
+/// During construction of a memory interface's ports information, checks
+/// whether bitwidths are consistent between all signals of the same nature
+/// (e.g., address signals). A width of 0 is understood as "uninitialized", in
+/// which case the first encountered signal determines the "reference" for that
+/// signal type's width. Fails when the memory input's bitwidth doesn't match
+/// the previously established bitwidth.
+static LogicalResult checkAndSetBitwidth(Value memInput, unsigned &width) {
+  // Determine the signal's width
+  unsigned inputWidth;
+  Type inType = memInput.getType();
+  if (isa<IndexType>(inType))
+    inputWidth = IndexType::kInternalStorageBitWidth;
+  else
+    inputWidth = inType.getIntOrFloatBitWidth();
+
+  if (width == 0) {
+    // This is the first time we encounter a signal of this type, consider its
+    // width as the reference one for its category
+    width = inputWidth;
+    return success();
+  }
+  if (width != inputWidth)
+    return memInput.getUsers().begin()->emitError()
+           << "Inconsistent bitwidths in inputs, expected signal with " << width
+           << " bits but got signal with " << inputWidth << " bits.";
+  return success();
+};
 
 LogicalResult MemoryControllerOp::verify() {
-  // Number of data results must match total number of loads
-  if (getLdData().size() != getLdCount())
+  FuncMemoryPorts ports(*this);
+  // Failing to get the port information will identify most sources of issues
+  if (failed(tryToGetPorts(ports)))
+    return failure();
+
+  // Number of data results must match total number of load ports
+  unsigned numDataResults = getLdData().size();
+  unsigned numLoadPorts = ports.getNumPorts(MemoryPort::Kind::LOAD);
+  if (numDataResults != numLoadPorts)
     return emitOpError() << "Number of data results (" << getLdData().size()
                          << ") must match total number of load operations ("
-                         << getLdCount() << ")";
+                         << numLoadPorts << ")";
 
-  auto isStoreOp = [](mlir::Attribute memOp) {
-    return cast<AccessTypeEnumAttr>(memOp).getValue() == AccessTypeEnum::Store;
-  };
-
-  // Compute number of inputs that are expected based on the set of memory
-  // accesses
-  unsigned numExpectedInputs = getLdCount() + getStCount() * 2;
-  for (auto &blockAccesses : getAccesses())
-    if (llvm::any_of(cast<mlir::ArrayAttr>(blockAccesses), isStoreOp))
-      numExpectedInputs++;
-
-  // Number of inputs must be consistent with set of memory accesses
-  if (numExpectedInputs != getInputs().size())
-    return emitError() << "Incorrect number of inputs with respect to "
-                          "registered memory operations, expected "
-                       << numExpectedInputs << " but got "
-                       << getInputs().size();
+  // Make sure all ports from any block are not interleaved with ports from
+  // other blocks
+  llvm::SmallSet<unsigned, 4> blockSet;
+  for (BlockMemoryPorts &blockPorts : ports.blocks)
+    if (auto [_, isNewBlock] = blockSet.insert(blockPorts.blockID); !isNewBlock)
+      return emitOpError() << "Ports from block " << blockPorts.blockID
+                           << " are interleaved with ports from some other "
+                              "blocks; this is prohibited.";
 
   return success();
-}
-
-unsigned MemoryControllerOp::getAccessTypeCount(AccessTypeEnum accType) {
-  unsigned count = 0;
-  ArrayAttr accesses = getAccesses();
-  for (auto &blockAccesses : accesses)
-    for (auto &access : cast<ArrayAttr>(blockAccesses))
-      if (cast<AccessTypeEnumAttr>(access).getValue() == accType)
-        count++;
-  return count;
-}
-
-bool MemoryControllerOp::bbHasControl(size_t idx) {
-  auto blockAccesses = cast<ArrayAttr>(getAccesses()[idx]);
-  auto isStoreOp = [](Attribute memOp) {
-    return cast<AccessTypeEnumAttr>(memOp).getValue() == AccessTypeEnum::Store;
-  };
-  return llvm::any_of(blockAccesses, isStoreOp);
-}
-
-size_t MemoryControllerOp::getBBInputCount(ArrayAttr &blockAccesses) {
-  size_t ldCount = 0, stCount = 0;
-  for (auto &access : blockAccesses) {
-    auto accessType = cast<handshake::AccessTypeEnumAttr>(access).getValue();
-    if (accessType == AccessTypeEnum::Load)
-      ldCount++;
-    else
-      stCount++;
-  }
-  return stCount * 2 + ldCount + ((stCount == 0) ? 0 : 1);
-}
-
-SmallVector<Value> MemoryControllerOp::getInputsOfBB(size_t idx) {
-  auto accesses = getAccesses();
-
-  // Count the total number of operands in previous blocks
-  size_t startIdx = 0;
-  for (size_t i = 0; i < idx; i++) {
-    auto blockAccesses = cast<ArrayAttr>(accesses[i]);
-    startIdx += getBBInputCount(blockAccesses);
-  }
-
-  // Accumulate all block operands
-  auto blockAccesses = cast<ArrayAttr>(accesses[idx]);
-  size_t endIdx = startIdx + getBBInputCount(blockAccesses);
-  SmallVector<Value> bbOperands;
-  auto inputs = getInputs();
-  for (auto i = startIdx; i < endIdx; i++)
-    bbOperands.push_back(inputs[i]);
-  return bbOperands;
-}
-
-SmallVector<SmallVector<Value>> MemoryControllerOp::groupInputsByBB() {
-  SmallVector<SmallVector<Value>> groups;
-  auto inputs = getInputs();
-  size_t startIdx = 0;
-
-  for (auto &accesses : getAccesses()) {
-    auto blockAccesses = cast<ArrayAttr>(accesses);
-    auto endIdx = startIdx + getBBInputCount(blockAccesses);
-
-    // Extract basic block operands
-    SmallVector<Value> bbOperands;
-    for (auto j = startIdx; j < endIdx; j++)
-      bbOperands.push_back(inputs[j]);
-    groups.push_back(bbOperands);
-
-    startIdx = endIdx;
-  }
-  return groups;
 }
 
 std::string MemoryControllerOp::getOperandName(unsigned int idx) {
   if (idx == 0)
     return "memref";
 
-  // Iterate through all memory accesses to find out the type of the operand
-  unsigned ldIdx = 0, stIdx = 0;
-  for (auto [blockIdx, accesses] : llvm::enumerate(getAccesses())) {
-    if (bbHasControl(blockIdx) && --idx == 0)
-      return "ctrl" + std::to_string(blockIdx);
-    for (auto access : cast<ArrayAttr>(accesses)) {
-      if (cast<AccessTypeEnumAttr>(access).getValue() == AccessTypeEnum::Load) {
-        if (--idx == 0)
-          return "ldAddr" + std::to_string(ldIdx);
-        ldIdx++;
+  // Iterate through all memory ports to find out the type of the operand
+  FuncMemoryPorts funcPorts = getPorts();
+  unsigned ctrlIdx = 0, loadIdx = 0, storeIdx = 0, inputIdx = idx - 1;
+  for (BlockMemoryPorts &blockPorts : funcPorts.blocks) {
+    if (blockPorts.hasControl()) {
+      if (inputIdx == blockPorts.ctrlPort->getCtrlInputIdx())
+        return "ctrl" + std::to_string(ctrlIdx);
+      ++ctrlIdx;
+    }
+    for (MemoryPort &accessPort : blockPorts.accessPorts) {
+      if (std::optional<LoadPort> loadPort = dyn_cast<LoadPort>(accessPort)) {
+        if (loadPort->getAddrInputIdx() == inputIdx)
+          return "ldAddr" + std::to_string(loadIdx);
+        ++loadIdx;
       } else {
-        if (--idx == 0)
-          return "stAddr" + std::to_string(stIdx);
-        if (--idx == 0)
-          return "stData" + std::to_string(stIdx);
-        stIdx++;
+        std::optional<StorePort> storePort = cast<StorePort>(accessPort);
+        if (storePort->getAddrInputIdx() == inputIdx)
+          return "stAddr" + std::to_string(storeIdx);
+        if (storePort->getDataInputIdx() == inputIdx)
+          return "stData" + std::to_string(storeIdx);
+        ++storeIdx;
       }
     }
   }
@@ -1637,58 +1606,234 @@ std::string MemoryControllerOp::getResultName(unsigned int idx) {
   return "ldData" + std::to_string(idx);
 }
 
-std::tuple<unsigned, unsigned, unsigned> MemoryControllerOp::getBitwidths() {
-  unsigned ctrlWidth = 0, addrWidth = 0, dataWidth = 0;
-  ValueRange inputs = getInputs();
-  size_t operandIdx = 0;
+LogicalResult
+MemoryControllerOp::tryToGetPorts(dynamatic::FuncMemoryPorts &ports) {
+  auto memOp = dyn_cast<handshake::MemoryControllerOp>(ports.memInterfaceOp);
+  if (!memOp)
+    return failure();
 
-  // Set the width if not already set
-  auto setIfFirst = [&](unsigned &width, size_t idx) {
-    if (width == 0)
-      width = cast<IntegerType>(inputs[idx].getType()).getIntOrFloatBitWidth();
-  };
+  unsigned resIdx = 0;
+  BlockMemoryPorts *currentBlock = nullptr;
+  unsigned skipStoreDataInput = false;
 
-  // If there is more than one result then the first one is a data signal
-  if (getNumResults() > 1)
-    dataWidth =
-        cast<IntegerType>(getResult(0).getType()).getIntOrFloatBitWidth();
-
-  // Iterate over all accesses to find the bitwidth of each signal type
-  for (auto [blockIdx, accesses] : llvm::enumerate(getAccesses())) {
-    auto blockAccesses = cast<ArrayAttr>(accesses);
-
-    // Check if we can determine the control bitwidth
-    if (bbHasControl(blockIdx))
-      setIfFirst(ctrlWidth, operandIdx++);
-
-    // Check if we can determine the address or data butwidths
-    for (auto access : blockAccesses) {
-      if (cast<AccessTypeEnumAttr>(access).getValue() == AccessTypeEnum::Load)
-        setIfFirst(addrWidth, operandIdx++);
-      else {
-        setIfFirst(addrWidth, operandIdx++);
-        setIfFirst(dataWidth, operandIdx++);
-      }
+  // Iterate over all memory inputs and figure out which ports are connected to
+  // the memory controller
+  for (auto [inputIdx, input] : llvm::enumerate(memOp.getInputs())) {
+    if (skipStoreDataInput) {
+      // Skip over the second input of a store port
+      skipStoreDataInput = false;
+      if (failed(checkAndSetBitwidth(input, ports.dataWidth)))
+        return failure();
+      continue;
     }
+    Operation *inputOp = backtrackToMemInput(input);
+    if (!inputOp)
+      return memOp.emitError()
+             << "Input (at index " << inputIdx
+             << ")to memory interface could not be identified.";
 
-    // Stop if we have found all widths
-    if (ctrlWidth != 0 && addrWidth != 0 && dataWidth != 0)
-      break;
+    // Identify the block the input operation belong to
+    /// TODO: change hardcoded "bb" to attribute mnemonic once the basic block
+    /// is made part of the Handshake dialect
+    auto ctrlBlock = dyn_cast_if_present<IntegerAttr>(inputOp->getAttr("bb"));
+    if (!ctrlBlock)
+      return inputOp->emitError()
+             << "Input operation of memory interface does not belong to "
+                "any basic block.";
+    unsigned inputOpBlock = ctrlBlock.getUInt();
+
+    if (auto loadOp = dyn_cast<handshake::DynamaticLoadOp>(inputOp)) {
+      // This is a load port
+      if (failed(checkAndSetBitwidth(input, ports.addrWidth)) ||
+          failed(checkAndSetBitwidth(memOp.getResult(resIdx), ports.dataWidth)))
+        return failure();
+
+      // If this is the first input or if the load belongs to a different block,
+      // allocate a new data stucture for the block's memory ports (without
+      // control)
+      if (!currentBlock || inputOpBlock != currentBlock->blockID) {
+        ports.blocks.emplace_back(inputOpBlock);
+        currentBlock = &ports.blocks.back();
+      }
+
+      // Add a load port to the block
+      currentBlock->accessPorts.push_back(LoadPort(loadOp, inputIdx, resIdx++));
+    } else if (auto storeOp = dyn_cast<handshake::DynamaticStoreOp>(inputOp)) {
+      // This is a store port
+      if (failed(checkAndSetBitwidth(input, ports.addrWidth)))
+        return failure();
+
+      // All basic blocks with at least one store access must have a control
+      // input, so the block's memory ports must already be defined and point to
+      // the same block
+      if (!currentBlock)
+        return storeOp.emitError()
+               << "Store port must be preceeded by control port.";
+      if (inputOpBlock != currentBlock->blockID)
+        return storeOp->emitError() << "Store port must belong to the same "
+                                       "block as the last control port.";
+
+      // Add a store port to the block and skip the next input, which is the
+      // store port data input
+      currentBlock->accessPorts.push_back(StorePort(storeOp, inputIdx));
+      skipStoreDataInput = true;
+    } else {
+      // This is a control value
+      if (failed(checkAndSetBitwidth(input, ports.ctrlWidth)))
+        return failure();
+
+      // Allocate a new data stucture for the block's memory ports
+      ports.blocks.emplace_back(inputOpBlock, ControlPort(inputOp, inputIdx));
+      currentBlock = &ports.blocks.back();
+    }
   }
-
-  return std::make_tuple(ctrlWidth, addrWidth, dataWidth);
+  return success();
 }
 
-// DynamaticLoadOp
+dynamatic::FuncMemoryPorts MemoryControllerOp::getPorts() {
+  FuncMemoryPorts memoryPorts(*this);
+  // We allow ourselves to discard the result here since the operation's
+  // verification function should ensure this call never produces an error
+  (void)tryToGetPorts(memoryPorts);
+  return memoryPorts;
+}
 
-void DynamaticLoadOp::build(OpBuilder &builder, OperationState &result,
+//===----------------------------------------------------------------------===//
+// Specific port kinds
+//===----------------------------------------------------------------------===//
+
+MemoryPort::MemoryPort(Operation *accessOp, ArrayRef<unsigned> indices,
+                       Kind kind)
+    : portOp(accessOp), indices(indices), kind(kind){};
+
+ControlPort::ControlPort(Operation *ctrlOp, unsigned ctrlInputIdx)
+    : MemoryPort(ctrlOp, {ctrlInputIdx}, Kind::CONTROL){};
+
+ControlPort::ControlPort(const MemoryPort &memPort) : MemoryPort(memPort){};
+
+LoadPort::LoadPort(handshake::DynamaticLoadOp loadOp, unsigned addrInputIdx,
+                   unsigned dataResIdx)
+    : MemoryPort(loadOp, {addrInputIdx, dataResIdx}, Kind::LOAD){};
+
+LoadPort::LoadPort(const MemoryPort &memPort) : MemoryPort(memPort){};
+
+handshake::DynamaticLoadOp LoadPort::getLoadOp() const {
+  return cast<handshake::DynamaticLoadOp>(portOp);
+}
+
+StorePort::StorePort(handshake::DynamaticStoreOp storeOp, unsigned baseInputIdx)
+    : MemoryPort(storeOp, {baseInputIdx, baseInputIdx + 1}, Kind::STORE){};
+
+StorePort::StorePort(const MemoryPort &memPort) : MemoryPort(memPort){};
+
+handshake::DynamaticStoreOp StorePort::getStoreOp() const {
+  return cast<handshake::DynamaticStoreOp>(portOp);
+}
+
+//===----------------------------------------------------------------------===//
+// BlockMemoryPorts
+//===----------------------------------------------------------------------===//
+
+BlockMemoryPorts::BlockMemoryPorts(unsigned blocKID) : blockID(blocKID){};
+
+BlockMemoryPorts::BlockMemoryPorts(unsigned blocKID, ControlPort ctrlPort)
+    : blockID(blocKID), ctrlPort(ctrlPort){};
+
+unsigned BlockMemoryPorts::getNumInputs() const {
+  unsigned numInputs = hasControl() ? 1 : 0;
+  for (const MemoryPort &port : accessPorts) {
+    if (isa<LoadPort>(port))
+      numInputs += 1;
+    else if (isa<StorePort>(port))
+      numInputs += 2;
+  }
+  return numInputs;
+}
+
+unsigned BlockMemoryPorts::getNumResults() const {
+  unsigned numResults = 0;
+  for (const MemoryPort &port : accessPorts) {
+    // There is one data output per load port
+    if (isa<LoadPort>(port))
+      numResults += 1;
+  }
+  return numResults;
+}
+
+bool BlockMemoryPorts::hasAnyPort(MemoryPort::Kind kind) const {
+  if (kind == MemoryPort::Kind::CONTROL)
+    return ctrlPort.has_value();
+  return llvm::any_of(accessPorts, [&](const MemoryPort &port) {
+    return port.getKind() == kind;
+  });
+}
+
+unsigned BlockMemoryPorts::getNumPorts(MemoryPort::Kind kind) const {
+  if (kind == MemoryPort::Kind::CONTROL)
+    return ctrlPort.has_value() ? 1 : 0;
+  unsigned count = 0;
+  for (const MemoryPort &port : accessPorts) {
+    if (port.getKind() == kind)
+      ++count;
+  }
+  return count;
+}
+
+//===----------------------------------------------------------------------===//
+// FuncMemoryPorts
+//===----------------------------------------------------------------------===//
+
+mlir::ValueRange FuncMemoryPorts::getBlockInputs(unsigned blockIdx) {
+  assert(blockIdx < blocks.size() && "index higher than number of blocks");
+  if (auto memOp = dyn_cast<handshake::MemoryControllerOp>(memInterfaceOp)) {
+    unsigned numToTake = blocks[blockIdx].getNumInputs();
+    unsigned numToDrop = 0;
+    // Drop inputs of all blocks before the target one
+    for (size_t i = 0; i < blockIdx; ++i)
+      numToDrop += blocks[i].getNumInputs();
+    return memOp.getInputs().drop_front(numToDrop).take_front(numToTake);
+  }
+  llvm_unreachable("unsupported memory interface type");
+}
+
+mlir::ValueRange FuncMemoryPorts::getBlockResults(unsigned blockIdx) {
+  assert(blockIdx < blocks.size() && "index higher than number of blocks");
+  if (auto memOp = dyn_cast<handshake::MemoryControllerOp>(memInterfaceOp)) {
+    unsigned numToTake = blocks[blockIdx].getNumResults();
+    unsigned numToDrop = 0;
+    // Drop inputs of all blocks before the target one
+    for (size_t i = 0; i < blockIdx; ++i)
+      numToDrop += blocks[i].getNumResults();
+    return memOp.getLdData().drop_front(numToDrop).take_front(numToTake);
+  }
+  llvm_unreachable("unsupported memory interface type");
+}
+
+bool FuncMemoryPorts::hasAnyPort(MemoryPort::Kind kind) const {
+  return llvm::any_of(blocks, [&](const BlockMemoryPorts &blockPorts) {
+    return blockPorts.hasAnyPort(kind);
+  });
+}
+
+unsigned FuncMemoryPorts::getNumPorts(MemoryPort::Kind kind) const {
+  unsigned count = 0;
+  for (const BlockMemoryPorts &blockPorts : blocks)
+    count += blockPorts.getNumPorts(kind);
+  return count;
+}
+
+//===----------------------------------------------------------------------===//
+// DynamaticLoadOp
+//===----------------------------------------------------------------------===//
+
+void DynamaticLoadOp::build(OpBuilder &odsBuilder, OperationState &odsState,
                             MemRefType memrefType, Value address) {
   // Address (data value will be added later in the elastic pass)
-  result.addOperands(address);
+  odsState.addOperands(address);
 
   // Data and address outputs
-  result.types.push_back(address.getType());
-  result.types.push_back(memrefType.getElementType());
+  odsState.types.push_back(address.getType());
+  odsState.types.push_back(memrefType.getElementType());
 }
 
 std::string DynamaticLoadOp::getOperandName(unsigned int idx) {
@@ -1710,7 +1855,9 @@ LogicalResult DynamaticLoadOp::inferReturnTypes(
   return success();
 }
 
+//===----------------------------------------------------------------------===//
 // DynamaticStoreOp
+//===----------------------------------------------------------------------===//
 
 std::string DynamaticStoreOp::getOperandName(unsigned int idx) {
   return (idx == 0) ? "addrIn" : "dataIn";
@@ -1730,7 +1877,9 @@ LogicalResult DynamaticStoreOp::inferReturnTypes(
   return success();
 }
 
+//===----------------------------------------------------------------------===//
 // DynamaticReturnOp
+//===----------------------------------------------------------------------===//
 
 LogicalResult DynamaticReturnOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
@@ -1763,7 +1912,9 @@ LogicalResult DynamaticReturnOp::verify() {
   return success();
 }
 
+//===----------------------------------------------------------------------===//
 // EndOp
+//===----------------------------------------------------------------------===//
 
 LogicalResult EndOp::verify() { return success(); }
 
@@ -1797,7 +1948,9 @@ ValueRange EndOp::getMemoryControls() {
   return getOperands().drop_front(numResults);
 }
 
+//===----------------------------------------------------------------------===//
 // MemDependenceAttr
+//===----------------------------------------------------------------------===//
 
 /// Pretty-prints a dependence component as [lb, ub] where both lb and ub are
 /// optional (in which case, no bound is printed).
@@ -1893,7 +2046,9 @@ Attribute MemDependenceAttr::parse(AsmParser &odsParser, Type odsType) {
   return MemDependenceAttr::get(ctx, dstAccess, loopDepth, components);
 }
 
-// ChannelBufProps
+//===----------------------------------------------------------------------===//
+// ChannelBufProps(Attr)
+//===----------------------------------------------------------------------===//
 
 ChannelBufProps::ChannelBufProps(unsigned minTrans,
                                  std::optional<unsigned> maxTrans,
@@ -1920,8 +2075,6 @@ bool ChannelBufProps::operator==(const ChannelBufProps &rhs) const {
          (this->maxOpaque == rhs.maxOpaque) && (this->inDelay == rhs.inDelay) &&
          (this->outDelay == rhs.outDelay) && (this->delay == rhs.delay);
 }
-
-// ChannelBufPropsAttr
 
 /// Parses the maximum number of slots and fills the last argument with the
 /// parsed value (std::nullopt if not specified).

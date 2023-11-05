@@ -169,24 +169,6 @@ def NameAttr : Handshake_Attr<"Name", "name"> {
 // Memory annotations
 //===----------------------------------------------------------------------===//
 
-// Define an enumeration (along with a corresponding attribute) made up of two
-// possible cases to represent the type (load or store) of a memory access.  
-def AccessCaseLoad: I32EnumAttrCase<"Load", 0>;
-def AccessCaseStore: I32EnumAttrCase<"Store", 1>;
-def AccessTypeEnum: I32EnumAttr<
-  "AccessTypeEnum", "Models a load or a store operation", [AccessCaseLoad, AccessCaseStore]> {
-  let genSpecializedAttr = 0;
-}
-def AccessTypeEnumAttr: EnumAttr<Handshake_Dialect, AccessTypeEnum, "AccessType">;
-
-// Represents memory accesses (in program order) to a memory region made from
-// within a single block.
-def BlockAccessesAttr : TypedArrayAttrBase<AccessTypeEnumAttr, "Array of memory operations">;
-
-// Represents memory accesses (in program order) to a memory region made from
-// multiple blocks (i.e., a function).
-def FuncAccessesAttr : TypedArrayAttrBase<BlockAccessesAttr, "Array of array of memory operation">;
-
 def MemAccessNameAttr : Handshake_Attr<"MemAccessName", "access_name"> {
   let summary = "A unique name given to a memory access";
   let description = [{
