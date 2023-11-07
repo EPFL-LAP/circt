@@ -559,7 +559,8 @@ def ConstantOp : Handshake_Op<"constant", [
 def MemRefTypeAttr : TypeAttrBase<"MemRefType", "memref type attribute">;
 def MemoryOp : Handshake_Op<"memory", [
   DeclareOpInterfaceMethods<ExecutableOpInterface>,
-  DeclareOpInterfaceMethods<MemoryOpInterface>, HasClock,
+  DeclareOpInterfaceMethods<MemoryOpInterface, ["allocateMemory", 
+    "getMemOperands", "getMemResults"]>, HasClock,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
 ]> {
@@ -832,60 +833,64 @@ def PackOp : Handshake_Op<"pack", [
 //===----------------------------------------------------------------------===//
 
 def MemoryControllerOp : Handshake_Op<"mem_controller", [
+  DeclareOpInterfaceMethods<MemoryOpInterface>,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
 ]> {
   let summary = "memory controller (dynamatic)";
   let description = [{
-    Each MemoryControllerOp represents an interface to an externally defined 
+    Each `MemoryControllerOp` represents an interface to an externally defined 
     unidimensional memory (i.e., it wraps a memref input to a handshake 
     function). It receives control signals from each basic block containing
     store operations referencing the wrapped memref; the formers are fed to the
     operation through constants indicating the number of stores the basic block
-    will make to the referenced memory region. It also receives memory access
-    requests from load (addr) and store (addr+data) operations. It returns a
-    value (data) for each load request as well as a control signal to indicate
-    basic block completion to the enclosing function's end operation.
-
-    Finally, the operation contains a unique numer identifying the interface
-    (id).
+    will make to the referenced memory region. It also receives load (address
+    value) and store (address value + data value) memory accesses, optionally
+    fed throuhg an LSQ. It returns a data value for each load request as well as
+    a single control signal to indicate basic block completion to the enclosing
+    function's end operation.
 
     The order of operands is
-    1. Wrapped memref
+    1. Wrapped memref.
     2. For each basic block referencing the memory region:
-      a. Control signal fed through a constant indicating the number of store
-      operations in the block (if there is at least one store in the block)
-      b. Load/Store access requests from within the block, in program order
+      a. If there is at least one store in the block, a control signal fed
+         through a constant indicating the number of store operations in the 
+         block.
+      b. Load/Store access requests from within the block, in program order.
+    3. If an LSQ references the same memory region, a single address operand for
+       load accesses coming through the LSQ and a single pair of address/data
+       operands for store accesses coming through the LSQ. 
 
     The order of results is
-    1. Load results, in program order (i.e., in load access requests order)
-    2. Control signal indicating completion
+    1. Load results, in program order (i.e., in load accesses order).
+    2. If an LSQ references the same memory region, a data result for load
+       accesses.
+    3. Control signal indicating completion.
 
     Example:
     ```mlir
-    %ldData1, %ldData2, %ctrl = mem_controller[%mem : memref<16xi32>]
-      (%bb1, %stAddr1, %stData1, %ldAddr1, %ldAddr2, %bb3, %stAddr2, %stData2) :
-      (i32, index, i32, index, index, i32, index, i32) -> (i32, i32, none)
+    %ldData1, %ldData2, %lsqLdData, %ctrl = mem_controller[%mem : memref<16xi32>]
+      (%bb1, %stAddr1, %stData1, %ldAddr1, %ldAddr2, %bb3, %stAddr2, %stData2
+      %lsqLdAddr, %lsqStAddr, %lsqStData) :
+      (i32, index, i32, index, index, i32, index, i32, index, index, i32) -> 
+      (i32, i32, i32, none)
     ```
   }];
   
-  let arguments = (ins AnyMemRef : $memref, Variadic<AnyType> : $inputs);
-  let results = (outs Variadic<AnyType> : $ldData, NoneType : $done);
+  let arguments = (ins AnyMemRef : $memref, Variadic<AnyType> : $memInputs);
+  let results = (outs Variadic<AnyType> : $memOutputs, NoneType : $done);
 
   let skipDefaultBuilders = 1;
-  let builders = [OpBuilder<(ins "Value":$memref, "ValueRange":$inputs)>];
+  let builders = [OpBuilder<(ins  "Value":$memref, "ValueRange":$inputs, 
+                                  "unsigned":$numLoads)>];
   let hasVerifier = 1;
-  let assemblyFormat = " `[` $memref `:` qualified(type($memref)) `]` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)";
+  let assemblyFormat = " `[` $memref `:` qualified(type($memref)) `]` `(` $memInputs `)` attr-dict `:` functional-type($memInputs, results)";
 
   let extraClassDeclaration = [{
     /// Returns a convenient data-structure to go over the controls and memory
-    /// accesses that are connected to the memory interface. 
-    dynamatic::FuncMemoryPorts getPorts();
+    /// accesses that are connected to the memory controller. 
+    dynamatic::MCPorts getPorts();
 
-    /// Same as `MemoryControllerOp::getPorts` but returns a failure instead of
-    /// asserting if memory input ports cannot be identified.  
-    static LogicalResult tryToGetPorts(dynamatic::FuncMemoryPorts &ports);
-    
     /// Returns the type of the memref referenced by the memory interface.
     mlir::MemRefType getMemRefType() {
       return getMemref().getType().cast<mlir::MemRefType>();
@@ -893,6 +898,69 @@ def MemoryControllerOp : Handshake_Op<"mem_controller", [
   }];
 }
 
+def LSQOp : Handshake_Op<"lsq", [
+  DeclareOpInterfaceMethods<MemoryOpInterface>,
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
+  DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>
+]> {
+  let summary = "load-store queue  (dynamatic)";
+  let description = [{
+    Each `LSQOp` represents an interface to an externally defined unidimensional
+    memory (i.e., it wraps a memref input to a handshake function). It receives
+    control signals from each basic block containing store operations
+    referencing the wrapped memref. It also receives load (address value) and
+    store (address value + data value) memory accesses, optionally fed throuhg
+    an LSQ. It returns a data value for each load request as well as a single
+    control signal to indicate basic block completion to the enclosing
+    function's end operation.
+
+    The order of operands is
+    1. Wrapped memref.
+    2. For each basic block referencing the memory region:
+      a. If there is at least one store in the block, a control signal fed
+         through a constant indicating the number of store operations in the 
+         block.
+      b. Load/Store access requests from within the block, in program order.
+    3. If an MC references the same memory region, a single data operand for
+       load accesses coming back from an external memory through the MC.
+
+    The order of results is
+    1. Load results, in program order (i.e., in load accesses order).
+    2. If an MC references the same memory region, a single address operand for
+       load accesses and a single pair of address/data operands for store
+       accesses going to the external memory through the MC. 
+    3. Control signal indicating completion.
+
+    Example:
+    ```mlir
+    %ldData1, %ldData2, %mcLdAddr, %mcStAddr, %mcStData, %ctrl = 
+      lsq[%mem : memref<16xi32>] (%bb1, %stAddr1, %stData1, %ldAddr1,
+      %ldAddr2, %bb3, %stAddr2, %stData2, $mcLdData) :
+      (i32, index, i32, index, index, i32, index, i32, i32) -> 
+      (i32, i32, index,index, i32 none)
+    ```
+  }];
+  
+  let arguments = (ins AnyMemRef : $memref, Variadic<AnyType> : $memInputs);
+  let results = (outs Variadic<AnyType> : $memOutputs, NoneType : $done);
+
+  let skipDefaultBuilders = 1;
+  let builders = [OpBuilder<(ins  "Value":$memref, "ValueRange":$inputs, 
+                                  "unsigned":$numLoads)>];
+  let hasVerifier = 1;
+  let assemblyFormat = " `[` $memref `:` qualified(type($memref)) `]` `(` $memInputs `)` attr-dict `:` functional-type($memInputs, results)";
+
+  let extraClassDeclaration = [{
+    /// Returns a convenient data-structure to go over the controls and memory
+    /// accesses that are connected to the LSQ. 
+    dynamatic::LSQPorts getPorts();
+    
+    /// Returns the type of the memref referenced by the LSQ.
+    mlir::MemRefType getMemRefType() {
+      return getMemref().getType().cast<mlir::MemRefType>();
+    }
+  }];
+}
 
 def DynamaticLoadOp : Handshake_Op<"d_load", [
   DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,

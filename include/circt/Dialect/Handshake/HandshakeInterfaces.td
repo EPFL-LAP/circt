@@ -4,6 +4,11 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
+//============================================================================//
+//
+// This file includes modifications made as part of the Dynamatic project.
+// See https://github.com/EPFL-LAP/dynamatic.
+//
 //===----------------------------------------------------------------------===//
 //
 // This is the definition file for the structured interface for Handshake ops.
@@ -188,9 +193,29 @@ def MemoryOpInterface : OpInterface<"MemoryOpInterface"> {
     InterfaceMethod<
         "Simulate the memory allocation in the memoryMap", "bool",
         "allocateMemory",
-        (ins "llvm::DenseMap<unsigned, unsigned> &" : $memoryMap,
-    "std::vector<std::vector<llvm::Any>> &" : $store,
-    "std::vector<double> &" : $storeTimes)>,
+        (ins  "llvm::DenseMap<unsigned, unsigned> &" : $memoryMap, 
+              "std::vector<std::vector<llvm::Any>> &" : $store,
+              "std::vector<double> &" : $storeTimes),
+        "",
+        [{
+          return false;
+        }]>,
+    InterfaceMethod<
+        "Returns the memory interface's operands related to memory ports.",
+        "mlir::ValueRange", "getMemOperands", (ins),
+        "",
+        [{
+          ConcreteOp concreteOp = cast<ConcreteOp>($_op);
+          return concreteOp.getMemInputs();
+        }]>,
+    InterfaceMethod<
+        "Returns the memory interface's results related to memory ports.",
+        "mlir::ValueRange", "getMemResults", (ins),
+        "",
+        [{
+          ConcreteOp concreteOp = cast<ConcreteOp>($_op);
+          return concreteOp.getMemOutputs();
+        }]>
   ];
 }
 

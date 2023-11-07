@@ -1002,6 +1002,12 @@ std::string handshake::MemoryOp::getResultName(unsigned int idx) {
   return getMemoryResultName(getLdCount(), getStCount(), idx);
 }
 
+/// Added to satisfy the MemoryOpInterface MLIR interface.
+ValueRange handshake::MemoryOp::getMemOperands() { return getOperands(); }
+
+/// Added to satisfy the MemoryOpInterface MLIR interface.
+ValueRange handshake::MemoryOp::getMemResults() { return getResults(); }
+
 LogicalResult MemoryOp::verify() {
   auto memrefType = getMemRefType();
 
@@ -1475,10 +1481,10 @@ LogicalResult ReturnOp::verify() {
 //============================================================================//
 
 //===----------------------------------------------------------------------===//
-// MemoryControllerOp
+// MemoryControllerOp & LSQOp
 //===----------------------------------------------------------------------===//
 
-/// FindS the type of operation that produces the input by backtracking the
+/// Finds the type of operation that produces the input by backtracking the
 /// def-use chain through potential bitwidth modification and/or forK
 /// operations.
 static Operation *backtrackToMemInput(Value input) {
@@ -1489,28 +1495,28 @@ static Operation *backtrackToMemInput(Value input) {
   return inputOp;
 }
 
-void MemoryControllerOp::build(OpBuilder &odsBuilder, OperationState &odsState,
-                               Value memref, ValueRange inputs) {
+/// Common building logic for memory controllers and LSQs.
+static void buildMemOp(OpBuilder &odsBuilder, OperationState &odsState,
+                       Value memref, ValueRange inputs, unsigned numLoads) {
   // Memory operands
   odsState.addOperands(memref);
   odsState.addOperands(inputs);
 
-  // Count the number of loads connected to the memory controller (to derive the
-  // number of results necessary)
-  unsigned ldCount = 0;
-  for (auto [inputIdx, input] : llvm::enumerate(inputs)) {
-    Operation *inputOp = backtrackToMemInput(input);
-    assert(inputOp && "failed to identify memory input");
-
-    // Check if the input comes from a load operation
-    if (isa<handshake::DynamaticLoadOp>(inputOp))
-      ++ldCount;
-  }
-
   // Data outputs (get their type from memref)
   auto memrefType = memref.getType().cast<MemRefType>();
-  odsState.types.append(ldCount, memrefType.getElementType());
+  odsState.types.append(numLoads, memrefType.getElementType());
   odsState.types.push_back(odsBuilder.getNoneType());
+}
+
+void MemoryControllerOp::build(OpBuilder &odsBuilder, OperationState &odsState,
+                               Value memref, ValueRange inputs,
+                               unsigned numLoads) {
+  buildMemOp(odsBuilder, odsState, memref, inputs, numLoads);
+}
+
+void LSQOp::build(OpBuilder &odsBuilder, OperationState &odsState, Value memref,
+                  ValueRange inputs, unsigned numLoads) {
+  buildMemOp(odsBuilder, odsState, memref, inputs, numLoads);
 }
 
 /// During construction of a memory interface's ports information, checks
@@ -1541,95 +1547,30 @@ static LogicalResult checkAndSetBitwidth(Value memInput, unsigned &width) {
   return success();
 };
 
-LogicalResult MemoryControllerOp::verify() {
-  FuncMemoryPorts ports(*this);
-  // Failing to get the port information will identify most sources of issues
-  if (failed(tryToGetPorts(ports)))
-    return failure();
-
-  // Number of data results must match total number of load ports
-  unsigned numDataResults = getLdData().size();
-  unsigned numLoadPorts = ports.getNumPorts(MemoryPort::Kind::LOAD);
-  if (numDataResults != numLoadPorts)
-    return emitOpError() << "Number of data results (" << getLdData().size()
-                         << ") must match total number of load operations ("
-                         << numLoadPorts << ")";
-
-  // Make sure all ports from any block are not interleaved with ports from
-  // other blocks
-  llvm::SmallSet<unsigned, 4> blockSet;
-  for (BlockMemoryPorts &blockPorts : ports.blocks)
-    if (auto [_, isNewBlock] = blockSet.insert(blockPorts.blockID); !isNewBlock)
-      return emitOpError() << "Ports from block " << blockPorts.blockID
-                           << " are interleaved with ports from some other "
-                              "blocks; this is prohibited.";
-
-  return success();
-}
-
-std::string MemoryControllerOp::getOperandName(unsigned int idx) {
-  if (idx == 0)
-    return "memref";
-
-  // Iterate through all memory ports to find out the type of the operand
-  FuncMemoryPorts funcPorts = getPorts();
-  unsigned ctrlIdx = 0, loadIdx = 0, storeIdx = 0, inputIdx = idx - 1;
-  for (BlockMemoryPorts &blockPorts : funcPorts.blocks) {
-    if (blockPorts.hasControl()) {
-      if (inputIdx == blockPorts.ctrlPort->getCtrlInputIdx())
-        return "ctrl" + std::to_string(ctrlIdx);
-      ++ctrlIdx;
-    }
-    for (MemoryPort &accessPort : blockPorts.accessPorts) {
-      if (std::optional<LoadPort> loadPort = dyn_cast<LoadPort>(accessPort)) {
-        if (loadPort->getAddrInputIdx() == inputIdx)
-          return "ldAddr" + std::to_string(loadIdx);
-        ++loadIdx;
-      } else {
-        std::optional<StorePort> storePort = cast<StorePort>(accessPort);
-        if (storePort->getAddrInputIdx() == inputIdx)
-          return "stAddr" + std::to_string(storeIdx);
-        if (storePort->getDataInputIdx() == inputIdx)
-          return "stData" + std::to_string(storeIdx);
-        ++storeIdx;
-      }
-    }
-  }
-
-  llvm_unreachable("index too high");
-}
-
-std::string MemoryControllerOp::getResultName(unsigned int idx) {
-  if (idx == getNumResults() - 1)
-    return "done";
-
-  return "ldData" + std::to_string(idx);
-}
-
-LogicalResult
-MemoryControllerOp::tryToGetPorts(dynamatic::FuncMemoryPorts &ports) {
-  auto memOp = dyn_cast<handshake::MemoryControllerOp>(ports.memInterfaceOp);
-  if (!memOp)
+/// Attempts to identify the type of all ports in a memory interface's memory
+/// inputs by backtracking their def-use chain till reaching specific operation
+/// types. `ports` is expected to be initialized with the memory interface it
+/// references but no port information yet. These are added by the function.
+/// Fails if memory ports could not be identified, in which case the memory
+/// interface is incorrectly set up; succeeds otherwise.
+static LogicalResult tryToGetPorts(dynamatic::FuncMemoryPorts &ports) {
+  if (!ports.memOp)
     return failure();
 
   unsigned resIdx = 0;
   BlockMemoryPorts *currentBlock = nullptr;
-  unsigned skipStoreDataInput = false;
+  ValueRange memResults = ports.memOp.getMemResults();
 
   // Iterate over all memory inputs and figure out which ports are connected to
   // the memory controller
-  for (auto [inputIdx, input] : llvm::enumerate(memOp.getInputs())) {
-    if (skipStoreDataInput) {
-      // Skip over the second input of a store port
-      skipStoreDataInput = false;
-      if (failed(checkAndSetBitwidth(input, ports.dataWidth)))
-        return failure();
-      continue;
-    }
-    Operation *inputOp = backtrackToMemInput(input);
+  auto inputIter = llvm::enumerate(ports.memOp.getMemOperands());
+  for (auto currentIt = inputIter.begin(); currentIt != inputIter.end();
+       ++currentIt) {
+    auto input = *currentIt;
+    Operation *inputOp = backtrackToMemInput(input.value());
     if (!inputOp)
-      return memOp.emitError()
-             << "Input (at index " << inputIdx
+      return ports.memOp->emitError()
+             << "Input (at index " << input.index()
              << ")to memory interface could not be identified.";
 
     // Identify the block the input operation belong to
@@ -1642,92 +1583,368 @@ MemoryControllerOp::tryToGetPorts(dynamatic::FuncMemoryPorts &ports) {
                 "any basic block.";
     unsigned inputOpBlock = ctrlBlock.getUInt();
 
-    if (auto loadOp = dyn_cast<handshake::DynamaticLoadOp>(inputOp)) {
-      // This is a load port
-      if (failed(checkAndSetBitwidth(input, ports.addrWidth)) ||
-          failed(checkAndSetBitwidth(memOp.getResult(resIdx), ports.dataWidth)))
+    auto handleLoad = [&](handshake::DynamaticLoadOp loadOp) -> LogicalResult {
+      if (failed(checkAndSetBitwidth(input.value(), ports.addrWidth)) ||
+          failed(checkAndSetBitwidth(memResults[resIdx], ports.dataWidth)))
         return failure();
 
-      // If this is the first input or if the load belongs to a different block,
-      // allocate a new data stucture for the block's memory ports (without
-      // control)
+      // If this is the first input or if the load belongs to a
+      // different block, allocate a new data stucture for the
+      // block's memory ports (without control)
       if (!currentBlock || inputOpBlock != currentBlock->blockID) {
         ports.blocks.emplace_back(inputOpBlock);
         currentBlock = &ports.blocks.back();
       }
 
       // Add a load port to the block
-      currentBlock->accessPorts.push_back(LoadPort(loadOp, inputIdx, resIdx++));
-    } else if (auto storeOp = dyn_cast<handshake::DynamaticStoreOp>(inputOp)) {
-      // This is a store port
-      if (failed(checkAndSetBitwidth(input, ports.addrWidth)))
+      currentBlock->accessPorts.push_back(
+          LoadPort(loadOp, input.index(), resIdx++));
+      return success();
+    };
+
+    auto handleStore =
+        [&](handshake::DynamaticStoreOp storeOp) -> LogicalResult {
+      auto dataInput = *(++currentIt);
+      if (failed(checkAndSetBitwidth(input.value(), ports.addrWidth)) ||
+          failed(checkAndSetBitwidth(dataInput.value(), ports.dataWidth)))
         return failure();
 
-      // All basic blocks with at least one store access must have a control
-      // input, so the block's memory ports must already be defined and point to
-      // the same block
+      // All basic blocks with at least one store access must
+      // have a control input, so the block's memory ports
+      // must already be defined and point to the same block
       if (!currentBlock)
-        return storeOp.emitError()
-               << "Store port must be preceeded by control port.";
+        return storeOp.emitError() << "Store port must be preceeded by control "
+                                      "port.";
       if (inputOpBlock != currentBlock->blockID)
-        return storeOp->emitError() << "Store port must belong to the same "
-                                       "block as the last control port.";
+        return storeOp.emitError() << "Store port must belong to the same "
+                                      "block as the last control port.";
 
-      // Add a store port to the block and skip the next input, which is the
-      // store port data input
-      currentBlock->accessPorts.push_back(StorePort(storeOp, inputIdx));
-      skipStoreDataInput = true;
-    } else {
-      // This is a control value
-      if (failed(checkAndSetBitwidth(input, ports.ctrlWidth)))
+      // Add a store port to the block and skip the next
+      // input, which is the store port data input
+      currentBlock->accessPorts.push_back(StorePort(storeOp, input.index()));
+      return success();
+    };
+
+    auto handleLSQ = [&](handshake::LSQOp lsqOp) -> LogicalResult {
+      auto stAddrInput = *(++currentIt);
+      auto stDataInput = *(++currentIt);
+      if (failed(checkAndSetBitwidth(input.value(), ports.addrWidth)) ||
+          failed(checkAndSetBitwidth(memResults[resIdx], ports.dataWidth)) ||
+          failed(checkAndSetBitwidth(stAddrInput.value(), ports.addrWidth)) ||
+          failed(checkAndSetBitwidth(stDataInput.value(), ports.dataWidth)))
         return failure();
 
-      // Allocate a new data stucture for the block's memory ports
-      ports.blocks.emplace_back(inputOpBlock, ControlPort(inputOp, inputIdx));
+      // Add the port to the list of ports from other memory
+      // interfaces
+      ports.interfacePorts.push_back(
+          LSQLoadStorePort(lsqOp, input.index(), resIdx++));
+      return success();
+    };
+
+    auto handleMC = [&](handshake::MemoryControllerOp mcOp) -> LogicalResult {
+      if (failed(checkAndSetBitwidth(input.value(), ports.dataWidth)) ||
+          failed(checkAndSetBitwidth(memResults[resIdx], ports.addrWidth)) ||
+          failed(
+              checkAndSetBitwidth(memResults[resIdx + 1], ports.addrWidth)) ||
+          failed(checkAndSetBitwidth(memResults[resIdx + 2], ports.dataWidth)))
+        return failure();
+
+      // Add the port to the list of ports from other memory
+      // interfaces
+      ports.interfacePorts.push_back(
+          MCLoadStorePort(mcOp, resIdx, input.index()));
+      resIdx += 3;
+      return success();
+    };
+
+    auto handleControl = [&](Operation *ctrlOp) -> LogicalResult {
+      if (failed(checkAndSetBitwidth(input.value(), ports.ctrlWidth)))
+        return failure();
+
+      // Allocate a new data stucture for the block's memory
+      // ports
+      ports.blocks.emplace_back(inputOpBlock,
+                                ControlPort(ctrlOp, input.index()));
       currentBlock = &ports.blocks.back();
-    }
+      return success();
+    };
+
+    LogicalResult res =
+        llvm::TypeSwitch<Operation *, LogicalResult>(inputOp)
+            .Case<handshake::DynamaticLoadOp>(handleLoad)
+            .template Case<handshake::DynamaticStoreOp>(handleStore)
+            .template Case<handshake::LSQOp>(handleLSQ)
+            .template Case<handshake::MemoryControllerOp>(handleMC)
+            .Default(handleControl);
+
+    // Forward failure when parsing parts and checked that all memory results
+    // have been accounted for
+    if (failed(res) || resIdx != memResults.size())
+      return failure();
   }
   return success();
 }
 
-dynamatic::FuncMemoryPorts MemoryControllerOp::getPorts() {
-  FuncMemoryPorts memoryPorts(*this);
+/// Common verification logic for memory controllers and LSQs.
+static LogicalResult verifyMemOp(FuncMemoryPorts &ports) {
+  // At most we can connect to a single other memory interface
+  if (ports.interfacePorts.size() > 1)
+    return ports.memOp.emitError() << "Interface may have at most one port to "
+                                      "other memory interfaces, but has "
+                                   << ports.interfacePorts.size() << ".";
+
+  // Make sure all ports from any block are not interleaved with ports from
+  // other blocks
+  llvm::SmallSet<unsigned, 4> blockSet;
+  for (BlockMemoryPorts &blockPorts : ports.blocks)
+    if (auto [_, isNewBlock] = blockSet.insert(blockPorts.blockID); !isNewBlock)
+      return ports.memOp->emitError()
+             << "Ports from block " << blockPorts.blockID
+             << " are interleaved with ports from some other "
+                "blocks; this is prohibited.";
+
+  return success();
+}
+
+LogicalResult MemoryControllerOp::verify() {
+  // Try to get the memort ports: this will catch most issues
+  MCPorts mcPorts(*this);
+  if (failed(tryToGetPorts(mcPorts)) || failed(verifyMemOp(mcPorts)))
+    return failure();
+
+  // If there is a port to another memory interface it must be to an LSQ
+  if (!mcPorts.interfacePorts.empty()) {
+    if (!isa<LSQLoadStorePort>(mcPorts.interfacePorts.front()))
+      return emitError()
+             << "The only memory interface port the memory controller "
+                "supports is to an LSQ.";
+  }
+  return success();
+}
+
+LogicalResult LSQOp::verify() {
+  // Try to get the memort ports: this will catch most issues
+  LSQPorts lsqPorts(*this);
+  if (failed(tryToGetPorts(lsqPorts)) || failed(verifyMemOp(lsqPorts)))
+    return failure();
+
+  // If there is a port to another memory interface it must be to an LSQ
+  if (!lsqPorts.interfacePorts.empty()) {
+    if (!isa<MCLoadStorePort>(lsqPorts.interfacePorts.front()))
+      return emitError() << "The only memory interface port the LSQ supports "
+                            "is to a memory controller.";
+  }
+  return success();
+}
+
+/// Common operand naming logic for memory controllers and LSQs.
+static std::string getMemOperandName(const FuncMemoryPorts &ports,
+                                     unsigned int idx) {
+  if (idx == 0)
+    return "memref";
+
+  // Iterate through all memory ports to find out the type of the operand
+  unsigned ctrlIdx = 0, loadIdx = 0, storeIdx = 0, inputIdx = idx - 1;
+  for (const BlockMemoryPorts &blockPorts : ports.blocks) {
+    if (blockPorts.hasControl()) {
+      if (inputIdx == blockPorts.ctrlPort->getCtrlInputIndex())
+        return "ctrl" + std::to_string(ctrlIdx);
+      ++ctrlIdx;
+    }
+    for (const MemoryPort &accessPort : blockPorts.accessPorts) {
+      if (std::optional<LoadPort> loadPort = dyn_cast<LoadPort>(accessPort)) {
+        if (loadPort->getAddrInputIndex() == inputIdx)
+          return "ldAddr" + std::to_string(loadIdx);
+        ++loadIdx;
+      } else {
+        std::optional<StorePort> storePort = cast<StorePort>(accessPort);
+        if (storePort->getAddrInputIndex() == inputIdx)
+          return "stAddr" + std::to_string(storeIdx);
+        if (storePort->getDataInputIndex() == inputIdx)
+          return "stData" + std::to_string(storeIdx);
+        ++storeIdx;
+      }
+    }
+  }
+
+  return "";
+}
+
+std::string MemoryControllerOp::getOperandName(unsigned int idx) {
+  assert(idx < getNumOperands() && "index too high");
+
+  // Try to get the operand name from the regular ports
+  MCPorts mcPorts = getPorts();
+  if (std::string name = getMemOperandName(mcPorts, idx); !name.empty())
+    return name;
+
+  // Try to get the operand name from a potential LSQ port
+  unsigned inputIdx = idx - 1;
+  if (mcPorts.hasConnectionToLSQ()) {
+    LSQLoadStorePort lsqPort = mcPorts.getLSQPort();
+    if (lsqPort.getLoadAddrInputIndex() == inputIdx)
+      return "lsqLdAddr";
+    if (lsqPort.getStoreAddrInputIndex() == inputIdx)
+      return "lsqStAddr";
+    if (lsqPort.getStoreDataInputIndex() == inputIdx)
+      return "lsqStData";
+  }
+  llvm_unreachable("faulty port logic");
+}
+
+std::string LSQOp::getOperandName(unsigned int idx) {
+  assert(idx < getNumOperands() && "index too high");
+
+  // Try to get the operand name from the regular ports
+  LSQPorts lsqPorts = getPorts();
+  if (std::string name = getMemOperandName(lsqPorts, idx); !name.empty())
+    return name;
+
+  // Try to get the operand name from a potential MC port
+  unsigned inputIdx = idx - 1;
+  if (lsqPorts.hasConnectionToMC()) {
+    MCLoadStorePort mcPort = lsqPorts.getMCPort();
+    if (mcPort.getLoadDataInputIndex() == inputIdx)
+      return "mcLdData";
+  }
+  llvm_unreachable("faulty port logic");
+}
+
+/// Common result naming logic for memory controllers and LSQs.
+static std::string getMemResultName(const FuncMemoryPorts &ports,
+                                    unsigned int idx) {
+  if (idx == ports.memOp->getNumResults() - 1)
+    return "done";
+
+  // Iterate through all memory ports to find out the type of the
+  // operand
+  unsigned loadIdx = 0;
+  for (const BlockMemoryPorts &blockPorts : ports.blocks) {
+    for (const MemoryPort &accessPort : blockPorts.accessPorts) {
+      if (std::optional<LoadPort> loadPort = dyn_cast<LoadPort>(accessPort)) {
+        if (loadPort->getDataOutputIndex() == idx)
+          return "ldAddr" + std::to_string(loadIdx);
+        ++loadIdx;
+      }
+    }
+  }
+  return "";
+}
+
+std::string MemoryControllerOp::getResultName(unsigned int idx) {
+  assert(idx < getNumResults() && "index too high");
+
+  // Try to get the operand name from the regular ports
+  MCPorts mcPorts = getPorts();
+  if (std::string name = getMemResultName(mcPorts, idx); !name.empty())
+    return name;
+
+  // Try to get the result name from a potential LSQ port
+  if (mcPorts.hasConnectionToLSQ()) {
+    LSQLoadStorePort lsqPort = mcPorts.getLSQPort();
+    if (lsqPort.getLoadDataOutputIndex() == idx)
+      return "lsqLdData";
+  }
+  llvm_unreachable("faulty port logic");
+}
+
+std::string LSQOp::getResultName(unsigned int idx) {
+  assert(idx < getNumResults() && "index too high");
+
+  // Try to get the operand name from the regular ports
+  LSQPorts lsqPorts = getPorts();
+  if (std::string name = getMemResultName(lsqPorts, idx); !name.empty())
+    return name;
+
+  // Go through ports to other memory interfaces
+  // Try to get the operand name from a potential MC port
+  if (lsqPorts.hasConnectionToMC()) {
+    MCLoadStorePort mcPort = lsqPorts.getMCPort();
+    if (mcPort.getLoadAddrOutputIndex() == idx)
+      return "mcLdAddr";
+    if (mcPort.getStoreAddrOutputIndex() == idx)
+      return "mcStAddr";
+    if (mcPort.getStoreDataOutputIndex() == idx)
+      return "mcStData";
+  }
+  llvm_unreachable("faulty port logic");
+}
+
+dynamatic::MCPorts MemoryControllerOp::getPorts() {
+  MCPorts mcPorts(*this);
   // We allow ourselves to discard the result here since the operation's
   // verification function should ensure this call never produces an error
-  (void)tryToGetPorts(memoryPorts);
-  return memoryPorts;
+  (void)tryToGetPorts(mcPorts);
+  return mcPorts;
+}
+
+dynamatic::LSQPorts LSQOp::getPorts() {
+  LSQPorts lsqPorts(*this);
+  // We allow ourselves to discard the result here since the operation's
+  // verification function should ensure this call never produces an error
+  (void)tryToGetPorts(lsqPorts);
+  return lsqPorts;
 }
 
 //===----------------------------------------------------------------------===//
 // Specific port kinds
 //===----------------------------------------------------------------------===//
 
-MemoryPort::MemoryPort(Operation *accessOp, ArrayRef<unsigned> indices,
-                       Kind kind)
-    : portOp(accessOp), indices(indices), kind(kind){};
+// MemoryPort (asbtract)
+
+MemoryPort::MemoryPort(Operation *portOp, ArrayRef<unsigned> indices, Kind kind)
+    : portOp(portOp), indices(indices), kind(kind) {}
+
+// ControlPort: op -> mem. interface
 
 ControlPort::ControlPort(Operation *ctrlOp, unsigned ctrlInputIdx)
-    : MemoryPort(ctrlOp, {ctrlInputIdx}, Kind::CONTROL){};
+    : MemoryPort(ctrlOp, {ctrlInputIdx}, Kind::CONTROL) {}
 
-ControlPort::ControlPort(const MemoryPort &memPort) : MemoryPort(memPort){};
+// LoadPort: DynamaticLoadOp <-> mem. interface
 
 LoadPort::LoadPort(handshake::DynamaticLoadOp loadOp, unsigned addrInputIdx,
-                   unsigned dataResIdx)
-    : MemoryPort(loadOp, {addrInputIdx, dataResIdx}, Kind::LOAD){};
-
-LoadPort::LoadPort(const MemoryPort &memPort) : MemoryPort(memPort){};
+                   unsigned dataOutputIdx)
+    : MemoryPort(loadOp, {addrInputIdx, dataOutputIdx}, Kind::LOAD) {}
 
 handshake::DynamaticLoadOp LoadPort::getLoadOp() const {
   return cast<handshake::DynamaticLoadOp>(portOp);
 }
 
-StorePort::StorePort(handshake::DynamaticStoreOp storeOp, unsigned baseInputIdx)
-    : MemoryPort(storeOp, {baseInputIdx, baseInputIdx + 1}, Kind::STORE){};
+// StorePort: DynamaticStoreOp -> mem. interface
 
-StorePort::StorePort(const MemoryPort &memPort) : MemoryPort(memPort){};
+StorePort::StorePort(handshake::DynamaticStoreOp storeOp, unsigned addrInputIdx)
+    : MemoryPort(storeOp, {addrInputIdx, addrInputIdx + 1}, Kind::STORE){};
 
 handshake::DynamaticStoreOp StorePort::getStoreOp() const {
   return cast<handshake::DynamaticStoreOp>(portOp);
+}
+
+// LSQLoadStorePort: LSQOp <-> mem. interface
+
+LSQLoadStorePort::LSQLoadStorePort(circt::handshake::LSQOp lsqOp,
+                                   unsigned loadAddrInputIdx,
+                                   unsigned loadDataOutputIdx)
+    : MemoryPort(lsqOp,
+                 {loadAddrInputIdx, loadDataOutputIdx, loadAddrInputIdx + 1,
+                  loadAddrInputIdx + 2},
+                 Kind::LSQ_LOAD_STORE) {}
+
+handshake::LSQOp LSQLoadStorePort::getLSQOp() const {
+  return cast<handshake::LSQOp>(portOp);
+}
+
+// LSQLoadStorePort: LSQOp <-> mem. interface
+
+MCLoadStorePort::MCLoadStorePort(circt::handshake::MemoryControllerOp mcOp,
+                                 unsigned loadAddrOutputIdx,
+                                 unsigned loadDataInputIdx)
+    : MemoryPort(mcOp,
+                 {loadAddrOutputIdx, loadDataInputIdx, loadAddrOutputIdx + 1,
+                  loadAddrOutputIdx + 2},
+                 Kind::MC_LOAD_STORE) {}
+
+handshake::MemoryControllerOp MCLoadStorePort::getMCOp() const {
+  return cast<handshake::MemoryControllerOp>(portOp);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1780,36 +1997,37 @@ unsigned BlockMemoryPorts::getNumPorts(MemoryPort::Kind kind) const {
 }
 
 //===----------------------------------------------------------------------===//
-// FuncMemoryPorts
+// FuncMemoryPorts (and children)
 //===----------------------------------------------------------------------===//
 
 mlir::ValueRange FuncMemoryPorts::getBlockInputs(unsigned blockIdx) {
   assert(blockIdx < blocks.size() && "index higher than number of blocks");
-  if (auto memOp = dyn_cast<handshake::MemoryControllerOp>(memInterfaceOp)) {
-    unsigned numToTake = blocks[blockIdx].getNumInputs();
-    unsigned numToDrop = 0;
-    // Drop inputs of all blocks before the target one
-    for (size_t i = 0; i < blockIdx; ++i)
-      numToDrop += blocks[i].getNumInputs();
-    return memOp.getInputs().drop_front(numToDrop).take_front(numToTake);
-  }
-  llvm_unreachable("unsupported memory interface type");
+  unsigned numToTake = blocks[blockIdx].getNumInputs();
+  unsigned numToDrop = 0;
+  // Drop inputs of all blocks before the target one
+  for (size_t i = 0; i < blockIdx; ++i)
+    numToDrop += blocks[i].getNumInputs();
+  return memOp.getMemOperands().drop_front(numToDrop).take_front(numToTake);
 }
 
 mlir::ValueRange FuncMemoryPorts::getBlockResults(unsigned blockIdx) {
   assert(blockIdx < blocks.size() && "index higher than number of blocks");
-  if (auto memOp = dyn_cast<handshake::MemoryControllerOp>(memInterfaceOp)) {
-    unsigned numToTake = blocks[blockIdx].getNumResults();
-    unsigned numToDrop = 0;
-    // Drop inputs of all blocks before the target one
-    for (size_t i = 0; i < blockIdx; ++i)
-      numToDrop += blocks[i].getNumResults();
-    return memOp.getLdData().drop_front(numToDrop).take_front(numToTake);
-  }
-  llvm_unreachable("unsupported memory interface type");
+  unsigned numToTake = blocks[blockIdx].getNumResults();
+  unsigned numToDrop = 0;
+  // Drop inputs of all blocks before the target one
+  for (size_t i = 0; i < blockIdx; ++i)
+    numToDrop += blocks[i].getNumResults();
+  return memOp.getMemResults().drop_front(numToDrop).take_front(numToTake);
 }
 
 bool FuncMemoryPorts::hasAnyPort(MemoryPort::Kind kind) const {
+  if (kind == MemoryPort::Kind::LSQ_LOAD_STORE ||
+      kind == MemoryPort::Kind::MC_LOAD_STORE) {
+    for (const MemoryPort &ports : interfacePorts) {
+      if (ports.getKind() == kind)
+        return true;
+    }
+  }
   return llvm::any_of(blocks, [&](const BlockMemoryPorts &blockPorts) {
     return blockPorts.hasAnyPort(kind);
   });
@@ -1817,9 +2035,41 @@ bool FuncMemoryPorts::hasAnyPort(MemoryPort::Kind kind) const {
 
 unsigned FuncMemoryPorts::getNumPorts(MemoryPort::Kind kind) const {
   unsigned count = 0;
-  for (const BlockMemoryPorts &blockPorts : blocks)
-    count += blockPorts.getNumPorts(kind);
+  if (kind == MemoryPort::Kind::LSQ_LOAD_STORE ||
+      kind == MemoryPort::Kind::MC_LOAD_STORE) {
+    for (const MemoryPort &ports : interfacePorts) {
+      if (ports.getKind() == kind)
+        ++count;
+    }
+  } else {
+    for (const BlockMemoryPorts &blockPorts : blocks)
+      count += blockPorts.getNumPorts(kind);
+  }
   return count;
+}
+
+unsigned FuncMemoryPorts::getNumLoadPorts() const {
+  return getNumPorts(MemoryPort::Kind::LOAD) +
+         getNumPorts(MemoryPort::Kind::LSQ_LOAD_STORE) +
+         getNumPorts(MemoryPort::Kind::MC_LOAD_STORE);
+}
+
+unsigned FuncMemoryPorts::getNumStorePorts() const {
+  return getNumPorts(MemoryPort::Kind::STORE) +
+         getNumPorts(MemoryPort::Kind::LSQ_LOAD_STORE) +
+         getNumPorts(MemoryPort::Kind::MC_LOAD_STORE);
+}
+
+MCPorts::MCPorts(handshake::MemoryControllerOp mcOp) : FuncMemoryPorts(mcOp){};
+
+handshake::MemoryControllerOp MCPorts::getMCOp() const {
+  return cast<handshake::MemoryControllerOp>(memOp);
+}
+
+LSQPorts::LSQPorts(handshake::LSQOp lsqOp) : FuncMemoryPorts(lsqOp){};
+
+handshake::LSQOp LSQPorts::getLSQOp() const {
+  return cast<handshake::LSQOp>(memOp);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1925,9 +2175,10 @@ ValueRange EndOp::getReturnValues() {
   auto numResults = funcOp.getFunctionType().getResults().size();
 
   // When the function returns more than one value (including the control
-  // signal), the end operation will not receive a value for the control signal
-  // (it will be inferred from the other returned values). Therefore, the
-  // operation will take one less argument than the function has return values
+  // signal), the end operation will not receive a value for the control
+  // signal (it will be inferred from the other returned values). Therefore,
+  // the operation will take one less argument than the function has return
+  // values
   if (numResults > 1)
     numResults--;
   return getOperands().take_front(numResults);
@@ -1940,9 +2191,10 @@ ValueRange EndOp::getMemoryControls() {
   auto numResults = funcOp.getFunctionType().getResults().size();
 
   // When the function returns more than one value (including the control
-  // signal), the end operation will not receive a value for the control signal
-  // (it will be inferred from the other returned values). Therefore, the
-  // operation will take one less argument than the function has return values
+  // signal), the end operation will not receive a value for the control
+  // signal (it will be inferred from the other returned values). Therefore,
+  // the operation will take one less argument than the function has return
+  // values
   if (numResults > 1)
     numResults--;
   return getOperands().drop_front(numResults);
@@ -1963,14 +2215,14 @@ static void printDependenceComponent(AsmPrinter &odsPrinter,
   odsPrinter << "[" << lb << ", " << ub << "]";
 }
 
-/// Parses one optional bound from a dependence component. Succeeds when parsing
-/// succeeds (even if the value is not present, since it's optional).
+/// Parses one optional bound from a dependence component. Succeeds when
+/// parsing succeeds (even if the value is not present, since it's optional).
 static ParseResult parseDependenceComponent(AsmParser &odsParser,
                                             std::optional<int64_t> &opt) {
   // For some obscure reason, trying to directly parse an int64_t from the IR
   // results in errors when the bound is either INT64_MIN or INT64_MAX. We
-  // hack around this by parsing APInt instead and then explicitly checking for
-  // underflow/overflow before converting back to an int64_t
+  // hack around this by parsing APInt instead and then explicitly checking
+  // for underflow/overflow before converting back to an int64_t
   APInt bound;
   if (auto res = odsParser.parseOptionalInteger(bound); res.has_value()) {
     if (failed(res.value()))
