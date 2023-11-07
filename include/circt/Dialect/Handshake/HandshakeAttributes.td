@@ -29,8 +29,9 @@ include "mlir/IR/OpBase.td"
 //===----------------------------------------------------------------------===//
 
 /// Base class for all Handshake attributes.
-class Handshake_Attr<string name, string attrMnemonic, list<Trait> traits = []>
-    : AttrDef<Handshake_Dialect, name, traits> {
+class Handshake_Attr< string name, string attrMnemonic, list<Trait> traits = [],
+                      string baseCppClass = "::mlir::Attribute"> 
+  : AttrDef<Handshake_Dialect, name, traits, baseCppClass> {
   let mnemonic = attrMnemonic;
 }
 
@@ -168,6 +169,21 @@ def NameAttr : Handshake_Attr<"Name", "name"> {
 //===----------------------------------------------------------------------===//
 // Memory annotations
 //===----------------------------------------------------------------------===//
+
+def NoLSQAttr : Handshake_Attr<"NoLSQ", "no_lsq", [], "::mlir::UnitAttr"> {
+  let summary = [{
+    A singleton to signal that a memory access does not need to go through an
+    LSQ.
+  }];
+  let description = [{
+    When attached to an operation representing some kind of memory access, this
+    instructs the cf-to-handshake conversion pass to not connect this memory
+    port to an LSQ. The port can be routed to an external memory through a
+    simple memory controller instead. Usually, this would be set by a memory
+    analysis pass that would have determined that the memory access is
+    independent from others to the same memory region.
+  }];
+}
 
 def MemAccessNameAttr : Handshake_Attr<"MemAccessName", "access_name"> {
   let summary = "A unique name given to a memory access";
