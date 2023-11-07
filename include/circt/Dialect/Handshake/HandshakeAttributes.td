@@ -185,23 +185,6 @@ def NoLSQAttr : Handshake_Attr<"NoLSQ", "no_lsq", [], "::mlir::UnitAttr"> {
   }];
 }
 
-def MemAccessNameAttr : Handshake_Attr<"MemAccessName", "access_name"> {
-  let summary = "A unique name given to a memory access";
-  let description = [{
-    This holds a unique name (within the context of an enclosing function) given
-    to a memory operation. This is useful as part of memory dependency analysis
-    to allow memory accesses to reference one another by name. This attribute is
-    a simple wrapper around a StringAttr.
-  }];
-  
-  let parameters = (ins "::mlir::StringAttr":$name);
-  let builders = [
-    AttrBuilder<(ins "::mlir::StringRef":$name),
-      "return $_get(context, ::mlir::StringAttr::get(context, name));">,
-  ];
-  let assemblyFormat = "`<` $name `>`";
-}
-
 def DependenceComponentAttr : Handshake_Attr<"DependenceComponent", "dep_comp"> {
   let summary = "Information about the direction of a dependence for an AffineForOp";
   let description = [{
