@@ -1677,11 +1677,16 @@ static LogicalResult tryToGetPorts(dynamatic::FuncMemoryPorts &ports) {
             .template Case<handshake::MemoryControllerOp>(handleMC)
             .Default(handleControl);
 
-    // Forward failure when parsing parts and checked that all memory results
-    // have been accounted for
-    if (failed(res) || resIdx != memResults.size())
+    // Forward failure when parsing parts
+    if (failed(res))
       return failure();
   }
+
+  // Check that all memory results have been accounted for
+  if (resIdx != memResults.size())
+    return ports.memOp->emitError()
+           << "When identifying memory ports, some memory results were "
+              "unnacounted for, this is not normal!";
   return success();
 }
 
