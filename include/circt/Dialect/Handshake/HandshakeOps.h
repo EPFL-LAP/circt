@@ -522,6 +522,15 @@ struct ChannelBufProps {
   /// Computes member-wise equality.
   bool operator==(const ChannelBufProps &rhs) const;
 };
+
+/// Attempts to identify the type of all ports in a memory interface's memory
+/// inputs by backtracking their def-use chain till reaching specific operation
+/// types. `ports` is expected to be initialized with the memory interface it
+/// references but no port information yet. These are added by the function.
+/// Fails if memory ports could not be identified, in which case the memory
+/// interface is incorrectly set up; succeeds otherwise.
+mlir::LogicalResult getMemoryPorts(dynamatic::FuncMemoryPorts &ports);
+
 } // namespace dynamatic
 
 static inline std::string getMaxStr(std::optional<unsigned> optMax) {
@@ -539,7 +548,7 @@ struct CastInfo<T, dynamatic::MemoryPort>
 /// Anything to a const generic memory port.
 template <typename T>
 struct CastInfo<T, const dynamatic::MemoryPort>
-    : OptionalValueCast<T, dynamatic::MemoryPort> {};
+    : OptionalValueCast<T, const dynamatic::MemoryPort> {};
 
 } // namespace llvm
 

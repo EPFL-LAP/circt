@@ -946,7 +946,7 @@ def LSQOp : Handshake_Op<"lsq", [
 
   let skipDefaultBuilders = 1;
   let builders = [OpBuilder<(ins  "Value":$memref, "ValueRange":$inputs, 
-                                  "unsigned":$numLoads)>];
+                                  "unsigned":$numLoads, "bool":$connectMC)>];
   let hasVerifier = 1;
   let assemblyFormat = " `[` $memref `:` qualified(type($memref)) `]` `(` $memInputs `)` attr-dict `:` functional-type($memInputs, results)";
 
