@@ -170,18 +170,35 @@ def NameAttr : Handshake_Attr<"Name", "name"> {
 // Memory annotations
 //===----------------------------------------------------------------------===//
 
-def NoLSQAttr : Handshake_Attr<"NoLSQ", "no_lsq", [], "::mlir::UnitAttr"> {
+def MemInterfaceAttr : Handshake_Attr<"MemInterface", "mem_interface"> {
   let summary = [{
-    A singleton to signal that a memory access does not need to go through an
-    LSQ.
+    Conveys information about the memory interface a memory port should
+    eventually connect to.
   }];
   let description = [{
     When attached to an operation representing some kind of memory access, this
-    instructs the cf-to-handshake conversion pass to not connect this memory
-    port to an LSQ. The port can be routed to an external memory through a
-    simple memory controller instead. Usually, this would be set by a memory
-    analysis pass that would have determined that the memory access is
-    independent from others to the same memory region.
+    instructs the cf-to-handshake conversion pass to connect the memory port to
+    a MC (no LSQ group provided) or to a particular LSQ group (LSQ group
+    provided). Usually, this would be set by a memory analysis pass that would
+    have determined dependency relations between this access and  others on the
+    same memory region.
+  }];
+  let parameters = (ins "::std::optional<unsigned>":$lsqGroup);
+  let builders = [AttrBuilder<(ins), "return $_get(context, std::nullopt);">];
+
+  let hasCustomAssemblyFormat = 1;
+  let extraClassDeclaration = [{
+    /// Determines whether the memory port the attribite is attached to should
+    /// connect to a load-store queue (LSQ).
+    inline bool connectsToLSQ() {
+      return getLsqGroup().has_value();
+    }
+
+    /// Determines whether the memory port the attribite is attached to should
+    /// connect to a memory controller (MC).
+    inline bool connectsToMC() {
+      return !connectsToLSQ();
+    }
   }];
 }
 

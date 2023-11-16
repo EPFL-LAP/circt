@@ -346,61 +346,59 @@ public:
   }
 };
 
-/// Represents a list of memory ports originating from a single basic block
-/// (in the Handshake sense i.e., given by the attribute, not the actual MLIR
-/// block) for a specific memory interface. A block may have a single control
-/// port and 0 or more memory access ports (loads and stores) stored in the
-/// same order as the memory interface's inputs.
-class BlockMemoryPorts {
+/// Represents a list of memory ports logically grouped together for a specific
+/// memory interface. The semantics of a group are given by the memory interface
+/// the group belongs to. A group may have a single control port and 0 or more
+/// memory access ports (loads and stores) stored in the same order as the
+/// memory interface's inputs. All ports in a group must map to a continuous
+/// subrange of the memory interface's inputs.
+class GroupMemoryPorts {
 public:
-  /// ID of the basic block the ports are contained in.
-  unsigned blockID;
-  /// Optional control port for the block.
+  /// Optional control port for the group.
   std::optional<ControlPort> ctrlPort;
   /// List of load/store accesses to the memory interface, ordered the same as
   /// the latter's inputs.
   mlir::SmallVector<MemoryPort> accessPorts;
 
-  /// Initializes a block's memory ports without a control port (and with no
+  /// Initializes a group's memory ports without a control port (and with no
   /// access ports).
-  BlockMemoryPorts(unsigned blockID);
+  GroupMemoryPorts() = default;
 
-  /// Initializes a block's memory ports with a control port (and with no access
+  /// Initializes a group's memory ports with a control port (and with no access
   /// ports).
-  BlockMemoryPorts(unsigned blockID, ControlPort ctrlPort);
+  GroupMemoryPorts(ControlPort ctrlPort);
 
-  /// Whether the block's has a control port.
+  /// Whether the group's has a control port.
   inline bool hasControl() const { return ctrlPort.has_value(); }
 
   /// Computes the number of inputs in the asociated memory interface that map
-  /// to this block's ports.
+  /// to this group's ports.
   unsigned getNumInputs() const;
 
   /// Computes the number of results in the asociated memory interface that map
-  /// to this block's ports.
+  /// to this group's ports.
   unsigned getNumResults() const;
 
-  /// Determines whether the block contains any port of the provided kind.
+  /// Determines whether the group contains any port of the provided kind.
   bool hasAnyPort(MemoryPort::Kind kind) const;
 
-  /// Determines the number of ports of the provided kind the block contains.
+  /// Determines the number of ports of the provided kind the group contains.
   unsigned getNumPorts(MemoryPort::Kind kind) const;
 };
 
 /// Represents all memory ports originating from a Handshake function for a
-/// specific memory interface. Ports are grouped by the basic block (in the
-/// Handshake sense i.e., given by the attribute, not the actual MLIR block)
-/// from which they originate. Groups of block ports are stored in the same
+/// specific memory interface. Ports are aggregated in groups whose semantics
+/// are given by the type of the memory interface. Groups are stored in the same
 /// order as the memory interface's inputs. There may be 0 or more such groups.
 /// Ports may also come from other memory interfaces.
 class FuncMemoryPorts {
 public:
   /// Memory interface associated with these ports.
   circt::handshake::MemoryOpInterface memOp;
-  /// List of blocks which contain at least one input port to the memory
+  /// List of groups which contain at least one input port to the memory
   /// interface, ordered the same as the latter's inputs.
-  mlir::SmallVector<BlockMemoryPorts> blocks;
-  /// Ports to other memory interfaces (outside blocks).
+  mlir::SmallVector<GroupMemoryPorts> groups;
+  /// Ports to other memory interfaces (outside groups).
   mlir::SmallVector<MemoryPort> interfacePorts;
   /// Bitwidth of control signals.
   unsigned ctrlWidth = 0;
@@ -414,16 +412,16 @@ public:
   FuncMemoryPorts(circt::handshake::MemoryOpInterface memOp) : memOp(memOp){};
 
   /// Returns the continuous subrange of the memory interface's inputs which a
-  /// block (indicated by its index in the list) maps to.
-  mlir::ValueRange getBlockInputs(unsigned blockIdx);
+  /// group (indicated by its index in the list) maps to.
+  mlir::ValueRange getGroupInputs(unsigned groupIdx);
 
   /// Returns the continuous subrange of the memory interface's results which a
-  /// block (indicated by its index in the list) maps to.
-  mlir::ValueRange getBlockResults(unsigned blockIdx);
+  /// group (indicated by its index in the list) maps to.
+  mlir::ValueRange getGroupResults(unsigned groupIdx);
 
-  /// Returns the number of blocks with at least one port to the memory
+  /// Returns the number of groups with at least one port to the memory
   /// interface.
-  unsigned getNumConnectedBlock() { return blocks.size(); }
+  unsigned getNumGroups() { return groups.size(); }
 
   /// Determines whether the function contains any port of the provided kind.
   bool hasAnyPort(MemoryPort::Kind kind) const;
@@ -438,6 +436,27 @@ public:
   unsigned getNumStorePorts() const;
 };
 
+/// Smart-pointer around a `dynamatic::GroupMemoryPorts`, specializing it for
+/// the `circt::handshake::MemoryControllerOp` memory interface.
+class MCBlock {
+public:
+  /// ID of the basic block the MC group corresponds to.
+  unsigned blockID;
+
+  /// Wraps a pointer to a `dynamatic::GroupMemoryPorts`.
+  MCBlock(GroupMemoryPorts *group, unsigned blockID);
+
+  /// Returns a reference to the underlying group.
+  GroupMemoryPorts &operator*() { return *group; };
+
+  /// Returns a pointer to the underlying group.
+  GroupMemoryPorts *operator->() { return group; };
+
+private:
+  /// Underlying group of memory ports.
+  GroupMemoryPorts *group;
+};
+
 /// Specialization of memory ports for a memory controller
 /// (`circt::handshake::MemoryControllerOp`), which may connect to an LSQ.
 class MCPorts : public FuncMemoryPorts {
@@ -447,6 +466,13 @@ public:
 
   /// Returns the memory controller operation this refers to.
   circt::handshake::MemoryControllerOp getMCOp() const;
+
+  /// Returns the ports corresponding to a single LSQ groups.
+  MCBlock getBlock(unsigned blockIdx);
+
+  /// Returns a list of all LSQ groups, in definition order in the memory
+  /// interface's inputs.
+  mlir::SmallVector<MCBlock> getBlocks();
 
   /// Determines whether the memory controller connects to an LSQ.
   bool hasConnectionToLSQ() const { return !interfacePorts.empty(); }
@@ -459,6 +485,24 @@ public:
   }
 };
 
+/// Smart-pointer around a `dynamatic::GroupMemoryPorts`, specializing it for
+/// the `circt::handshake::LSQOp` memory interface.
+class LSQGroup {
+public:
+  /// Wraps a pointer to a `dynamatic::GroupMemoryPorts`.
+  LSQGroup(GroupMemoryPorts *groups);
+
+  /// Returns a reference to the underlying group.
+  GroupMemoryPorts &operator*() { return *group; };
+
+  /// Returns a pointer to the underlying group.
+  GroupMemoryPorts *operator->() { return group; };
+
+private:
+  /// Underlying group of memory ports.
+  GroupMemoryPorts *group;
+};
+
 /// Specialization of memory ports for an LSQ (`circt::handshake::LSQOp`), which
 /// may connect to a memory controller.
 class LSQPorts : public FuncMemoryPorts {
@@ -469,10 +513,17 @@ public:
   /// Returns the memory controller operation this refers to.
   circt::handshake::LSQOp getLSQOp() const;
 
+  /// Returns the ports corresponding to a single LSQ groups.
+  LSQGroup getGroup(unsigned groupIdx) { return LSQGroup(&groups[groupIdx]); }
+
+  /// Returns a list of all LSQ groups, in definition order in the memory
+  /// interface's inputs.
+  mlir::SmallVector<LSQGroup> getGroups();
+
   /// Determines whether the LSQ connects to a memory controller.
   bool hasConnectionToMC() const { return !interfacePorts.empty(); }
 
-  /// Returns the LSQ's MC ports (which must exist, check with
+  /// Returns the LSQ's memory controller ports (which must exist, check with
   /// `hasConnectionToMC`).
   MCLoadStorePort getMCPort() const {
     assert(hasConnectionToMC() && "no LSQ connected");
@@ -523,13 +574,9 @@ struct ChannelBufProps {
   bool operator==(const ChannelBufProps &rhs) const;
 };
 
-/// Attempts to identify the type of all ports in a memory interface's memory
-/// inputs by backtracking their def-use chain till reaching specific operation
-/// types. `ports` is expected to be initialized with the memory interface it
-/// references but no port information yet. These are added by the function.
-/// Fails if memory ports could not be identified, in which case the memory
-/// interface is incorrectly set up; succeeds otherwise.
-mlir::LogicalResult getMemoryPorts(dynamatic::FuncMemoryPorts &ports);
+/// Identifies the type of all ports in a memory interface's memory inputs by
+/// backtracking their def-use chain till reaching specific operation types.
+FuncMemoryPorts getMemoryPorts(circt::handshake::MemoryOpInterface memOp);
 
 } // namespace dynamatic
 
