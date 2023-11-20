@@ -2132,7 +2132,7 @@ dynamatic::LSQPorts LSQOp::getPorts() {
 
 handshake::MemoryControllerOp LSQOp::getConnectedMC() {
   return dyn_cast<circt::handshake::MemoryControllerOp>(
-      *getMemInputs().back().getUsers().begin());
+      *getMemInputs().back().getDefiningOp());
 }
 
 Value LSQOp::getMemRef() {
