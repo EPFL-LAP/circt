@@ -1895,12 +1895,12 @@ ParseResult LSQOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  // Parse result types
-  if (parser.parseColon() || parser.parseLParen() ||
-      parser.parseTypeList(operandTypes) || parser.parseRParen() ||
-      parser.parseArrow() || parser.parseLParen() ||
-      parser.parseTypeList(resultTypes) || parser.parseRParen())
+  // Parse operand and result types (function type)
+  FunctionType funType;
+  if (parser.parseColonType(funType))
     return failure();
+  llvm::copy(funType.getInputs(), std::back_inserter(operandTypes));
+  llvm::copy(funType.getResults(), std::back_inserter(resultTypes));
 
   // Set result types and resolve operand types
   result.addTypes(resultTypes);
