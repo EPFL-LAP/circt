@@ -1601,8 +1601,7 @@ static LogicalResult getMCPorts(MCPorts &mcPorts) {
     unsigned portOpBlock = 0;
     if (ctrlBlock) {
       portOpBlock = ctrlBlock.getUInt();
-    } else if (isa<handshake::DynamaticLoadOp, handshake::DynamaticStoreOp>(
-                   portOp)) {
+    } else if (isa<handshake::MCLoadOp, handshake::MCStoreOp>(portOp)) {
       return portOp->emitError() << "Input operation of memory interface "
                                     "does not belong to any basic block.";
     }
@@ -1616,7 +1615,7 @@ static LogicalResult getMCPorts(MCPorts &mcPorts) {
       return success();
     };
 
-    auto handleLoad = [&](handshake::DynamaticLoadOp loadOp) -> LogicalResult {
+    auto handleLoad = [&](handshake::MCLoadOp loadOp) -> LogicalResult {
       if (failed(checkAndSetBitwidth(input.value(), mcPorts.addrWidth)) ||
           failed(checkAndSetBitwidth(memResults[resIdx], mcPorts.dataWidth)))
         return failure();
@@ -1636,12 +1635,11 @@ static LogicalResult getMCPorts(MCPorts &mcPorts) {
 
       // Add a load port to the group
       currentGroup->accessPorts.push_back(
-          LoadPort(loadOp, input.index(), resIdx++));
+          MCLoadPort(loadOp, input.index(), resIdx++));
       return success();
     };
 
-    auto handleStore =
-        [&](handshake::DynamaticStoreOp storeOp) -> LogicalResult {
+    auto handleStore = [&](handshake::MCStoreOp storeOp) -> LogicalResult {
       auto dataInput = *(++currentIt);
       if (failed(checkAndSetBitwidth(input.value(), mcPorts.addrWidth)) ||
           failed(checkAndSetBitwidth(dataInput.value(), mcPorts.dataWidth)))
@@ -1658,7 +1656,7 @@ static LogicalResult getMCPorts(MCPorts &mcPorts) {
         return failure();
 
       // Add a store port to the block
-      currentGroup->accessPorts.push_back(StorePort(storeOp, input.index()));
+      currentGroup->accessPorts.push_back(MCStorePort(storeOp, input.index()));
       return success();
     };
 
@@ -1690,8 +1688,8 @@ static LogicalResult getMCPorts(MCPorts &mcPorts) {
     };
 
     LogicalResult res = llvm::TypeSwitch<Operation *, LogicalResult>(portOp)
-                            .Case<handshake::DynamaticLoadOp>(handleLoad)
-                            .Case<handshake::DynamaticStoreOp>(handleStore)
+                            .Case<handshake::MCLoadOp>(handleLoad)
+                            .Case<handshake::MCStoreOp>(handleStore)
                             .Case<handshake::LSQOp>(handleLSQ)
                             .Default(handleControl);
     // Forward failure when parsing parts
@@ -1972,7 +1970,7 @@ static LogicalResult getLSQPorts(LSQPorts &lsqPorts) {
              << "Input (at index " << input.index()
              << ") of memory interface could not be identified.";
 
-    auto handleLoad = [&](handshake::DynamaticLoadOp loadOp) -> LogicalResult {
+    auto handleLoad = [&](handshake::LSQLoadOp loadOp) -> LogicalResult {
       if (failed(checkAndSetBitwidth(input.value(), lsqPorts.addrWidth)) ||
           failed(checkAndSetBitwidth(memResults[resIdx], lsqPorts.dataWidth)) ||
           failed(checkGroupIsValid()))
@@ -1980,13 +1978,12 @@ static LogicalResult getLSQPorts(LSQPorts &lsqPorts) {
 
       // Add a load port to the group
       currentGroup->accessPorts.push_back(
-          LoadPort(loadOp, input.index(), resIdx++));
+          LSQLoadPort(loadOp, input.index(), resIdx++));
       --(*currentGroupRemaining);
       return success();
     };
 
-    auto handleStore =
-        [&](handshake::DynamaticStoreOp storeOp) -> LogicalResult {
+    auto handleStore = [&](handshake::LSQStoreOp storeOp) -> LogicalResult {
       auto dataInput = *(++currentIt);
       if (failed(checkAndSetBitwidth(input.value(), lsqPorts.addrWidth)) ||
           failed(checkAndSetBitwidth(dataInput.value(), lsqPorts.dataWidth)) ||
@@ -1994,7 +1991,7 @@ static LogicalResult getLSQPorts(LSQPorts &lsqPorts) {
         return failure();
 
       // Add a store port to the group and decrement our group size by one
-      currentGroup->accessPorts.push_back(StorePort(storeOp, input.index()));
+      currentGroup->accessPorts.push_back(LSQStorePort(storeOp, input.index()));
       --(*currentGroupRemaining);
       return success();
     };
@@ -2038,8 +2035,8 @@ static LogicalResult getLSQPorts(LSQPorts &lsqPorts) {
     };
 
     LogicalResult res = llvm::TypeSwitch<Operation *, LogicalResult>(portOp)
-                            .Case<handshake::DynamaticLoadOp>(handleLoad)
-                            .Case<handshake::DynamaticStoreOp>(handleStore)
+                            .Case<handshake::LSQLoadOp>(handleLoad)
+                            .Case<handshake::LSQStoreOp>(handleStore)
                             .Case<handshake::MemoryControllerOp>(handleMC)
                             .Default(handleControl);
     // Forward failure when parsing parts
@@ -2176,23 +2173,38 @@ MemoryPort::MemoryPort(Operation *portOp, ArrayRef<unsigned> indices, Kind kind)
 ControlPort::ControlPort(Operation *ctrlOp, unsigned ctrlInputIdx)
     : MemoryPort(ctrlOp, {ctrlInputIdx}, Kind::CONTROL) {}
 
-// LoadPort: DynamaticLoadOp <-> mem. interface
+// LoadPort: LoadOpInterface <-> mem. interface
 
-LoadPort::LoadPort(handshake::DynamaticLoadOp loadOp, unsigned addrInputIdx,
-                   unsigned dataOutputIdx)
-    : MemoryPort(loadOp, {addrInputIdx, dataOutputIdx}, Kind::LOAD) {}
+LoadPort::LoadPort(handshake::LoadOpInterface loadOp, unsigned addrInputIdx,
+                   unsigned dataOutputIdx, Kind kind)
+    : MemoryPort(loadOp, {addrInputIdx, dataOutputIdx}, kind) {}
 
-handshake::DynamaticLoadOp LoadPort::getLoadOp() const {
-  return cast<handshake::DynamaticLoadOp>(portOp);
+handshake::LoadOpInterface LoadPort::getLoadOp() const {
+  return cast<handshake::LoadOpInterface>(portOp);
 }
 
-// StorePort: DynamaticStoreOp -> mem. interface
+MCLoadPort::MCLoadPort(handshake::MCLoadOp loadOp, unsigned addrInputIdx,
+                       unsigned dataOutputIdx)
+    : LoadPort(loadOp, addrInputIdx, dataOutputIdx, Kind::MC_LOAD) {}
 
-StorePort::StorePort(handshake::DynamaticStoreOp storeOp, unsigned addrInputIdx)
-    : MemoryPort(storeOp, {addrInputIdx, addrInputIdx + 1}, Kind::STORE){};
+LSQLoadPort::LSQLoadPort(handshake::LSQLoadOp loadOp, unsigned addrInputIdx,
+                         unsigned dataOutputIdx)
+    : LoadPort(loadOp, addrInputIdx, dataOutputIdx, Kind::LSQ_LOAD) {}
 
-handshake::DynamaticStoreOp StorePort::getStoreOp() const {
-  return cast<handshake::DynamaticStoreOp>(portOp);
+// StorePort: StoreOpInterface -> mem. interface
+
+StorePort::StorePort(handshake::StoreOpInterface storeOp, unsigned addrInputIdx,
+                     Kind kind)
+    : MemoryPort(storeOp, {addrInputIdx, addrInputIdx + 1}, kind){};
+
+MCStorePort::MCStorePort(handshake::MCStoreOp storeOp, unsigned addrInputIdx)
+    : StorePort(storeOp, addrInputIdx, Kind::MC_STORE) {}
+
+LSQStorePort::LSQStorePort(handshake::LSQStoreOp storeOp, unsigned addrInputIdx)
+    : StorePort(storeOp, addrInputIdx, Kind::LSQ_STORE) {}
+
+handshake::StoreOpInterface StorePort::getStoreOp() const {
+  return cast<handshake::StoreOpInterface>(portOp);
 }
 
 // LSQLoadStorePort: LSQOp <-> mem. interface
@@ -2250,25 +2262,6 @@ unsigned GroupMemoryPorts::getNumResults() const {
   return numResults;
 }
 
-bool GroupMemoryPorts::hasAnyPort(MemoryPort::Kind kind) const {
-  if (kind == MemoryPort::Kind::CONTROL)
-    return ctrlPort.has_value();
-  return llvm::any_of(accessPorts, [&](const MemoryPort &port) {
-    return port.getKind() == kind;
-  });
-}
-
-unsigned GroupMemoryPorts::getNumPorts(MemoryPort::Kind kind) const {
-  if (kind == MemoryPort::Kind::CONTROL)
-    return ctrlPort.has_value() ? 1 : 0;
-  unsigned count = 0;
-  for (const MemoryPort &port : accessPorts) {
-    if (port.getKind() == kind)
-      ++count;
-  }
-  return count;
-}
-
 //===----------------------------------------------------------------------===//
 // FuncMemoryPorts (and children)
 //===----------------------------------------------------------------------===//
@@ -2291,46 +2284,6 @@ mlir::ValueRange FuncMemoryPorts::getGroupResults(unsigned groupIdx) {
   for (size_t i = 0; i < groupIdx; ++i)
     numToDrop += groups[i].getNumResults();
   return memOp.getMemResults().drop_front(numToDrop).take_front(numToTake);
-}
-
-bool FuncMemoryPorts::hasAnyPort(MemoryPort::Kind kind) const {
-  if (kind == MemoryPort::Kind::LSQ_LOAD_STORE ||
-      kind == MemoryPort::Kind::MC_LOAD_STORE) {
-    for (const MemoryPort &ports : interfacePorts) {
-      if (ports.getKind() == kind)
-        return true;
-    }
-  }
-  return llvm::any_of(groups, [&](const GroupMemoryPorts &blockPorts) {
-    return blockPorts.hasAnyPort(kind);
-  });
-}
-
-unsigned FuncMemoryPorts::getNumPorts(MemoryPort::Kind kind) const {
-  unsigned count = 0;
-  if (kind == MemoryPort::Kind::LSQ_LOAD_STORE ||
-      kind == MemoryPort::Kind::MC_LOAD_STORE) {
-    for (const MemoryPort &ports : interfacePorts) {
-      if (ports.getKind() == kind)
-        ++count;
-    }
-  } else {
-    for (const GroupMemoryPorts &blockPorts : groups)
-      count += blockPorts.getNumPorts(kind);
-  }
-  return count;
-}
-
-unsigned FuncMemoryPorts::getNumLoadPorts() const {
-  return getNumPorts(MemoryPort::Kind::LOAD) +
-         getNumPorts(MemoryPort::Kind::LSQ_LOAD_STORE) +
-         getNumPorts(MemoryPort::Kind::MC_LOAD_STORE);
-}
-
-unsigned FuncMemoryPorts::getNumStorePorts() const {
-  return getNumPorts(MemoryPort::Kind::STORE) +
-         getNumPorts(MemoryPort::Kind::LSQ_LOAD_STORE) +
-         getNumPorts(MemoryPort::Kind::MC_LOAD_STORE);
 }
 
 MCBlock::MCBlock(GroupMemoryPorts *group, unsigned blockID)
@@ -2370,11 +2323,13 @@ handshake::LSQOp LSQPorts::getLSQOp() const {
 }
 
 //===----------------------------------------------------------------------===//
-// DynamaticLoadOp
+// MCLoadOp/LSQLoadOp
 //===----------------------------------------------------------------------===//
 
-void DynamaticLoadOp::build(OpBuilder &odsBuilder, OperationState &odsState,
-                            MemRefType memrefType, Value address) {
+/// Common builder for load ports that only adds the address operand (the data
+/// operand should be added manually later).
+static void buildLoadPort(OperationState &odsState, MemRefType memrefType,
+                          Value address) {
   // Address (data value will be added later in the elastic pass)
   odsState.addOperands(address);
 
@@ -2383,45 +2338,14 @@ void DynamaticLoadOp::build(OpBuilder &odsBuilder, OperationState &odsState,
   odsState.types.push_back(memrefType.getElementType());
 }
 
-std::string DynamaticLoadOp::getOperandName(unsigned int idx) {
-  return (idx == 0) ? "addrIn" : "dataFromMem";
+void MCLoadOp::build(OpBuilder &odsBuilder, OperationState &odsState,
+                     MemRefType memrefType, Value address) {
+  buildLoadPort(odsState, memrefType, address);
 }
 
-std::string DynamaticLoadOp::getResultName(unsigned int idx) {
-  return (idx == 0) ? "addrOut" : "dataOut";
-}
-
-LogicalResult DynamaticLoadOp::inferReturnTypes(
-    MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, mlir::OpaqueProperties properties,
-    mlir::RegionRange regions,
-    SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
-  auto opTypes = operands.getTypes();
-  inferredReturnTypes.insert(inferredReturnTypes.end(), opTypes.begin(),
-                             opTypes.end());
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
-// DynamaticStoreOp
-//===----------------------------------------------------------------------===//
-
-std::string DynamaticStoreOp::getOperandName(unsigned int idx) {
-  return (idx == 0) ? "addrIn" : "dataIn";
-}
-
-std::string DynamaticStoreOp::getResultName(unsigned int idx) {
-  return (idx == 0) ? "addrOut" : "dataToMem";
-}
-
-LogicalResult DynamaticStoreOp::inferReturnTypes(
-    MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, mlir::OpaqueProperties properties,
-    mlir::RegionRange regions,
-    SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
-  auto types = operands.getTypes();
-  inferredReturnTypes.append(types.begin(), types.end());
-  return success();
+void LSQLoadOp::build(OpBuilder &odsBuilder, OperationState &odsState,
+                      MemRefType memrefType, Value address) {
+  buildLoadPort(odsState, memrefType, address);
 }
 
 //===----------------------------------------------------------------------===//

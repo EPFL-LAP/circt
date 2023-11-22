@@ -1042,18 +1042,46 @@ def LSQOp : Handshake_Op<"lsq", [
   }];
 }
 
-def DynamaticLoadOp : Handshake_Op<"d_load", [
+class Handshake_LoadOp<string mnemonic> : Handshake_Op<mnemonic, [
+  LoadOpInterface,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>,
   DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>
 ]> {
-  let summary = "load operation (dynamatic)";
+  let arguments = (ins AnyType:$address, AnyType:$data);
+  let results = (outs AnyType:$addressResult, AnyType:$dataResult);
+  let builders = [OpBuilder<(ins "MemRefType":$memrefType, "Value":$address)>];
+  let assemblyFormat = " `[` $address `]` $data attr-dict `:` qualified(type($address)) `,` qualified(type($data)) ";
+
+  let extraClassDefinition = [{
+    std::string $cppClass::getOperandName(unsigned int idx) {
+      return (idx == 0) ? "addrIn" : "dataFromMem";
+    }
+
+    std::string $cppClass::getResultName(unsigned int idx) {
+      return (idx == 0) ? "addrOut" : "dataOut";
+    }
+
+    mlir::LogicalResult $cppClass::inferReturnTypes(
+        mlir::MLIRContext *context, std::optional<Location> location,
+        mlir::ValueRange operands, mlir:: DictionaryAttr attributes,
+        mlir::OpaqueProperties properties, mlir::RegionRange regions,
+        mlir::SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
+      auto oprdTypes = operands.getTypes();
+      inferredReturnTypes.append(oprdTypes.begin(), oprdTypes.end());
+      return success();
+    }
+  }];
+}
+
+def MCLoadOp : Handshake_LoadOp<"mc_load"> {
+  let summary = "load operation for memory controller (MC)";
   let description = [{
     Represents a load memory port which sends load requests to a memory
-    interface. It receives an address from a dataflow predecessor and a data
-    value from the memory interface that eventually holds the loaded data. It
-    returns an address that is sent to the memory interface as well as a data
-    value that is sent to its dataflow successor.
+    controller (`circt::handshake::MemoryControllerOp`). It receives an address
+    from a dataflow predecessor and a data value from the memory interface that
+    eventually holds the loaded data. It returns an address that is sent to the
+    memory interface as well as a data value that is sent to its dataflow successor.
 
     The order of operands is
     1. address (from predecessor)
@@ -1065,27 +1093,74 @@ def DynamaticLoadOp : Handshake_Op<"d_load", [
 
     Example:
     ```mlir
-    %addrToMem, %dataToSucc = d_load [%addrFromPred] %dataFromMem : i32, index
+    %addrToMem, %dataToSucc = mc_load [%addrFromPred] %dataFromMem : i32, index
     ```
   }];
-
-  let arguments = (ins AnyType:$address, AnyType:$data);
-  let results = (outs AnyType:$addressResult, AnyType:$dataResult);
-  let builders = [OpBuilder<(ins "MemRefType":$memrefType, "Value":$address)>];
-  let assemblyFormat = " `[` $address `]` $data attr-dict `:` qualified(type($address)) `,` qualified(type($data)) ";
 }
 
-def DynamaticStoreOp : Handshake_Op<"d_store", [
+def LSQLoadOp : Handshake_LoadOp<"lsq_load"> {
+  let summary = "load operation for load-store queue (LSQ)";
+  let description = [{
+    Represents a load memory port which sends load requests to an LSQ
+    (`circt::handshake::LSQOp`). It receives an address from a dataflow
+    predecessor and a data value from the memory interface that eventually holds
+    the loaded data. It returns an address that is sent to the memory interface
+    as well as a data value that is sent to its dataflow successor.
+
+    The order of operands is
+    1. address (from predecessor)
+    2. data value (from memory interface)
+
+    The order of results is
+    1. address (to memory interface).
+    2. data value (to successor)
+
+    Example:
+    ```mlir
+    %addrToMem, %dataToSucc = lsq_load [%addrFromPred] %dataFromMem : i32, index
+    ```
+  }];
+}
+
+class Handshake_StoreOp<string mnemonic> : Handshake_Op<mnemonic, [
+  StoreOpInterface,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getOperandName"]>,
   DeclareOpInterfaceMethods<NamedIOInterface, ["getResultName"]>,
   DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>
 ]> {
-  let summary = "store operation (dynamatic)";
+  let arguments = (ins AnyType:$address, AnyType:$data);
+  let results = (outs AnyType:$addressResult, AnyType:$dataResult);
+  let assemblyFormat = " `[` $address `]` $data attr-dict `:` qualified(type($data)) `,` qualified(type($address)) ";
+
+  let extraClassDefinition = [{
+    std::string $cppClass::getOperandName(unsigned int idx) {
+      return (idx == 0) ? "addrIn" : "dataIn";
+    }
+
+    std::string $cppClass::getResultName(unsigned int idx) {
+      return (idx == 0) ? "addrOut" : "dataToMem";
+    }
+
+    mlir::LogicalResult $cppClass::inferReturnTypes(
+        mlir::MLIRContext *context, std::optional<Location> location,
+        mlir::ValueRange operands, mlir:: DictionaryAttr attributes,
+        mlir::OpaqueProperties properties, mlir::RegionRange regions,
+        mlir::SmallVectorImpl<mlir::Type> &inferredReturnTypes) {
+      auto oprdTypes = operands.getTypes();
+      inferredReturnTypes.append(oprdTypes.begin(), oprdTypes.end());
+      return success();
+    }
+  }];
+}
+
+def MCStoreOp : Handshake_StoreOp<"mc_store"> {
+  let summary = "store operation for memory controller (MC)";
   let description = [{
     Represents a store memory port which sends store requests to a memory
-    interface. It receives an address and a data value to store in memory from
-    its dataflow predecessors. It returns the value to store and an address,
-    both of which are sent to the memory interface.
+    controller (`circt::handshake::MemoryControllerOp`). It receives an address
+    and a data value to store in memory from its dataflow predecessors. It
+    returns the value to store and an address, both of which are sent to the
+    memory interface.
 
     The order of operands is
     1. address (from predecessor)
@@ -1097,13 +1172,32 @@ def DynamaticStoreOp : Handshake_Op<"d_store", [
 
     Example:
     ```mlir
-     %addrToMem, %dataToMem = d_store [%addrFromPred] %dataFromPred : i32, index
+     %addrToMem, %dataToMem = mc_store [%addrFromPred] %dataFromPred : i32, index
     ```
   }];
+}
 
-  let arguments = (ins AnyType:$address, AnyType:$data);
-  let results = (outs AnyType:$addressResult, AnyType:$dataResult);
-  let assemblyFormat = " `[` $address `]` $data attr-dict `:` qualified(type($data)) `,` qualified(type($address)) ";
+def LSQStoreOp : Handshake_StoreOp<"lsq_store"> {
+  let summary = "store operation for load-store queue (LSQ)";
+  let description = [{
+    Represents a store memory port which sends store requests to an LSQ
+    (`circt::handshake::LSQOp`). It receives an address and a data value to
+    store in memory from its dataflow predecessors. It returns the value to
+    store and an address, both of which are sent to the memory interface.
+
+    The order of operands is
+    1. address (from predecessor)
+    2. data value (from predecessor)
+
+    The order of results is
+    1. address (to memory interface).
+    2. data value (to memory interface)
+
+    Example:
+    ```mlir
+     %addrToMem, %dataToMem = lsq_store [%addrFromPred] %dataFromPred : i32, index
+    ```
+  }];
 }
 
 def DynamaticReturnOp : Handshake_Op<"d_return", [

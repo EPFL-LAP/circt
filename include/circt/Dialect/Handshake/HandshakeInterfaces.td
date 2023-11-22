@@ -219,6 +219,88 @@ def MemoryOpInterface : OpInterface<"MemoryOpInterface"> {
   ];
 }
 
+def LoadOpInterface : OpInterface<"LoadOpInterface"> {
+  let description = [{
+    Handhsake operations which act as load ports to a memory interface.
+  }];
+
+  let methods = [
+    InterfaceMethod<
+    "Returns the load port's address input (from the circuit).",
+    "Value", "getAddressInput", (ins),
+    "",
+    [{
+      ConcreteOp concreteOp = cast<ConcreteOp>($_op);
+      return concreteOp.getAddress();
+    }]>,
+    InterfaceMethod<
+    "Returns the load port's data input (from the memory interface).",
+    "Value", "getDataInput", (ins),
+    "",
+    [{
+      ConcreteOp concreteOp = cast<ConcreteOp>($_op);
+      return concreteOp.getData();
+    }]>,
+    InterfaceMethod<
+    "Returns the load port's address output (to the memory interface).",
+    "Value", "getAddressOutput", (ins),
+    "",
+    [{
+      ConcreteOp concreteOp = cast<ConcreteOp>($_op);
+      return concreteOp.getAddressResult();
+    }]>,
+    InterfaceMethod<
+    "Returns the load port's data output (to the circuit).",
+    "Value", "getDataOutput", (ins),
+    "",
+    [{
+      ConcreteOp concreteOp = cast<ConcreteOp>($_op);
+      return concreteOp.getDataResult();
+    }]>,
+  ];
+}
+
+def StoreOpInterface : OpInterface<"StoreOpInterface"> {
+  let description = [{
+    Handhsake operations which act as store ports to a memory interface.
+  }];
+
+  let methods = [
+    InterfaceMethod<
+    "Returns the store port's address input (from the circuit).",
+    "Value", "getAddressInput", (ins),
+    "",
+    [{
+      ConcreteOp concreteOp = cast<ConcreteOp>($_op);
+      return concreteOp.getAddress();
+    }]>,
+    InterfaceMethod<
+    "Returns the store port's data input (from the circuit).",
+    "Value", "getDataInput", (ins),
+    "",
+    [{
+      ConcreteOp concreteOp = cast<ConcreteOp>($_op);
+      return concreteOp.getData();
+    }]>,
+    InterfaceMethod<
+    "Returns the store port's address output (to the memory interface).",
+    "Value", "getAddressOutput", (ins),
+    "",
+    [{
+      ConcreteOp concreteOp = cast<ConcreteOp>($_op);
+      return concreteOp.getAddressResult();
+    }]>,
+    InterfaceMethod<
+    "Returns the store port's data output (to the memory interface).",
+    "Value", "getDataOutput", (ins),
+    "",
+    [{
+      ConcreteOp concreteOp = cast<ConcreteOp>($_op);
+      return concreteOp.getDataResult();
+    }]>,
+  ];
+}
+
 def NamedIOInterface : OpInterface<"NamedIOInterface"> {
   let description =
       [{"Provides detailed names for the operands and results of an operation."}];

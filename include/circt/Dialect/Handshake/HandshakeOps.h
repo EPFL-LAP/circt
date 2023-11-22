@@ -43,8 +43,10 @@ namespace circt {
 namespace handshake {
 
 // Forward declaration needed by memory ports data structures.
-class DynamaticLoadOp;
-class DynamaticStoreOp;
+class MCLoadOp;
+class LSQLoadOp;
+class MCStoreOp;
+class LSQStoreOp;
 class MemoryControllerOp;
 class LSQOp;
 
@@ -100,10 +102,22 @@ public:
   enum class Kind {
     /// Control port
     CONTROL,
-    /// Load port (from circt::handshake::DynamaticLoadOp)
+    /// Load port (from load-like operation)
     LOAD,
-    /// Store port (from circt::handshake::DynamaticStoreOp)
+    /// Load port (from circt::handhsake::MCLoadOp)
+    MC_LOAD,
+    /// Load port (from circt::handhsake::LSQLoadOp)
+    LSQ_LOAD,
+    // Marker for last load-type port
+    LOAD_END,
+    /// Store port (from store-like operation)
     STORE,
+    /// Store port (from circt::handhsake::MCLStoreOp)
+    MC_STORE,
+    /// Store port (from circt::handhsake::LSQStoreOp)
+    LSQ_STORE,
+    // Marker for last store-type port
+    STORE_END,
     // MC load/store port (from circt::handshake::MemoryControllerOp),
     MC_LOAD_STORE,
     // LSQ load/store port (from circt::handshake::LSQOp),
@@ -166,7 +180,7 @@ public:
   }
 };
 
-/// Memory load port associated with a `circt::handshake::DynamaticLoadOp`. It
+/// Memory load port associated with a load-like Handshake operation. It
 /// represents two values in the memory interface's inputs/outputs.
 /// 1. the address value produced by the port operation and consumed by the
 /// memory interface, and
@@ -174,12 +188,6 @@ public:
 /// operation.
 class LoadPort : public MemoryPort {
 public:
-  /// Constructs the load port from a load operation, the index of the load's
-  /// address output in the memory interface's inputs, and the index of the
-  /// load's data input in the memory interface's outputs.
-  LoadPort(circt::handshake::DynamaticLoadOp loadOp, unsigned addrInputIdx,
-           unsigned dataOutputIdx);
-
   /// Default copy constructor.
   LoadPort(const LoadPort &other) = default;
 
@@ -187,7 +195,7 @@ public:
   LoadPort(const MemoryPort &memPort) : MemoryPort(memPort){};
 
   /// Returns the load operation the port is associated to.
-  inline circt::handshake::DynamaticLoadOp getLoadOp() const;
+  inline circt::handshake::LoadOpInterface getLoadOp() const;
 
   /// Returns the index of the load address value in the memory interface's
   /// inputs.
@@ -199,11 +207,55 @@ public:
 
   /// Used by LLVM-style RTTI to establish `isa` relationships.
   static inline bool classof(const MemoryPort *port) {
-    return port->getKind() == Kind::LOAD;
+    Kind kind = port->getKind();
+    return Kind::LOAD <= kind && kind < Kind::LOAD_END;
+  }
+
+protected:
+  /// Constructs the load port from a load operation, the index of the load's
+  /// address output in the memory interface's inputs, the index of the
+  /// load's data input in the memory interface's outputs, and the specific load
+  /// kind.
+  LoadPort(circt::handshake::LoadOpInterface loadOp, unsigned addrInputIdx,
+           unsigned dataOutputIdx, Kind kind);
+};
+
+// Memory load port for memory controllers.
+class MCLoadPort : public LoadPort {
+public:
+  /// Constructs the load port from an MC load operation, the index of the
+  /// load's address output in the memory interface's inputs, and the index of
+  /// the load's data input in the memory interface's outputs.
+  MCLoadPort(circt::handshake::MCLoadOp loadOp, unsigned addrInputIdx,
+             unsigned dataOutputIdx);
+
+  /// Returns the MC load operation the port is associated to.
+  inline circt::handshake::MCLoadOp getMCLoadOp() const;
+
+  /// Used by LLVM-style RTTI to establish `isa` relationships.
+  static inline bool classof(const MemoryPort *port) {
+    return port->getKind() == Kind::MC_LOAD;
   }
 };
 
-/// Memory store port associated with a `circt::handshake::DynamaticStoreOp`. It
+// Memory load port for LSQs.
+class LSQLoadPort : public LoadPort {
+public:
+  /// Same semantics as the `LoadPort` constructor but works specifically with a
+  /// load operation that connects to an LSQ.
+  LSQLoadPort(circt::handshake::LSQLoadOp loadOp, unsigned addrInputIdx,
+              unsigned dataOutputIdx);
+
+  /// Returns the MC load operation the port is associated to.
+  inline circt::handshake::LSQLoadOp getLSQLoadOp() const;
+
+  /// Used by LLVM-style RTTI to establish `isa` relationships.
+  static inline bool classof(const MemoryPort *port) {
+    return port->getKind() == Kind::LSQ_LOAD;
+  }
+};
+
+/// Memory store port associated with a store-like Handhsake operation. It
 /// represents two values in the memory interface's inputs.
 /// 1. the address value produced by the port operation and consumed by the
 /// memory interface, and
@@ -211,11 +263,6 @@ public:
 /// memory interface.
 class StorePort : public MemoryPort {
 public:
-  /// Constructs the store port from a store operation and the index of the
-  /// store's address output in the memory interface's inputs (the store's data
-  /// output is assumed to be at the next index).
-  StorePort(circt::handshake::DynamaticStoreOp storeOp, unsigned addrInputIdx);
-
   /// Default copy constructor.
   StorePort(const StorePort &other) = default;
 
@@ -223,7 +270,7 @@ public:
   StorePort(const MemoryPort &memPort) : MemoryPort(memPort){};
 
   /// Returns the store operation the port is associated to.
-  inline circt::handshake::DynamaticStoreOp getStoreOp() const;
+  inline circt::handshake::StoreOpInterface getStoreOp() const;
 
   /// Returns the index of the store address value in the memory interface's
   /// inputs.
@@ -235,7 +282,47 @@ public:
 
   /// Used by LLVM-style RTTI to establish `isa` relationships.
   static inline bool classof(const MemoryPort *port) {
-    return port->getKind() == Kind::STORE;
+    Kind kind = port->getKind();
+    return Kind::STORE <= kind && kind < Kind::STORE_END;
+  }
+
+protected:
+  /// Constructs the store port from a store operation, the index of the
+  /// store's address output in the memory interface's inputs (the store's data
+  /// output is assumed to be at the next index), and the specific store kind.
+  StorePort(circt::handshake::StoreOpInterface storeOp, unsigned addrInputIdx,
+            Kind kind);
+};
+
+// Memory store port for memory controllers.
+class MCStorePort : public StorePort {
+public:
+  /// Same semantics as the `LoadPort` constructor but works specifically with a
+  /// load operation that connects to an MC.
+  MCStorePort(circt::handshake::MCStoreOp mcStoreOp, unsigned addrInputIdx);
+
+  /// Returns the MC store operation the port is associated to.
+  inline circt::handshake::MCStoreOp getMCStoreOp() const;
+
+  /// Used by LLVM-style RTTI to establish `isa` relationships.
+  static inline bool classof(const MemoryPort *port) {
+    return port->getKind() == Kind::MC_STORE;
+  }
+};
+
+// Memory store port for LSQs.
+class LSQStorePort : public StorePort {
+public:
+  /// Same semantics as the `LoadPort` constructor but works specifically with a
+  /// load operation that connects to an MC.
+  LSQStorePort(circt::handshake::LSQStoreOp lsqStoreOp, unsigned addrInputIdx);
+
+  /// Returns the MC store operation the port is associated to.
+  inline circt::handshake::LSQStoreOp getLSQStoreOp() const;
+
+  /// Used by LLVM-style RTTI to establish `isa` relationships.
+  static inline bool classof(const MemoryPort *port) {
+    return port->getKind() == Kind::LSQ_STORE;
   }
 };
 
@@ -379,11 +466,28 @@ public:
   /// to this group's ports.
   unsigned getNumResults() const;
 
-  /// Determines whether the group contains any port of the provided kind.
-  bool hasAnyPort(MemoryPort::Kind kind) const;
+  /// Determines whether the group contains any port of the provided kinds.
+  template <typename... PortKinds>
+  bool hasAnyPort() const {
+    if (ctrlPort && mlir::isa<PortKinds...>(*ctrlPort))
+      return true;
+    return llvm::any_of(accessPorts, [&](const MemoryPort &port) {
+      return mlir::isa<PortKinds...>(port);
+    });
+  }
 
-  /// Determines the number of ports of the provided kind the group contains.
-  unsigned getNumPorts(MemoryPort::Kind kind) const;
+  /// Determines the number of ports of the provided kinds the group contains.
+  template <typename... PortKinds>
+  unsigned getNumPorts() const {
+    unsigned count = 0;
+    if (ctrlPort && mlir::isa<PortKinds...>(*ctrlPort))
+      ++count;
+    for (const MemoryPort &port : accessPorts) {
+      if (mlir::isa<PortKinds...>(port))
+        ++count;
+    }
+    return count;
+  }
 };
 
 /// Represents all memory ports originating from a Handshake function for a
@@ -419,21 +523,34 @@ public:
   /// group (indicated by its index in the list) maps to.
   mlir::ValueRange getGroupResults(unsigned groupIdx);
 
-  /// Returns the number of groups with at least one port to the memory
-  /// interface.
+  /// Returns the number of groups attached to the memory interface.
   unsigned getNumGroups() { return groups.size(); }
 
-  /// Determines whether the function contains any port of the provided kind.
-  bool hasAnyPort(MemoryPort::Kind kind) const;
+  /// Determines whether the function contains any port of the provided kinds.
+  template <typename... PortKinds>
+  bool hasAnyPort() const {
+    if (llvm::any_of(groups, [&](const GroupMemoryPorts &blockPorts) {
+          return blockPorts.hasAnyPort<PortKinds...>();
+        }))
+      return true;
+    return llvm::any_of(interfacePorts, [&](const MemoryPort &ifacePort) {
+      return mlir::isa<PortKinds...>(ifacePort);
+    });
+  }
 
-  /// Determines the number of ports of the provided kind the function contains.
-  unsigned getNumPorts(MemoryPort::Kind kind) const;
-
-  /// Determines the number of load-like ports the function contains.
-  unsigned getNumLoadPorts() const;
-
-  /// Determines the number of store-like ports the function contains.
-  unsigned getNumStorePorts() const;
+  /// Determines the number of ports of the provided kinds that the function
+  /// contains.
+  template <typename... PortKinds>
+  unsigned getNumPorts() const {
+    unsigned count = 0;
+    for (const MemoryPort &ifacePort : interfacePorts) {
+      if (mlir::isa<PortKinds...>(ifacePort))
+        ++count;
+    }
+    for (const GroupMemoryPorts &blockPorts : groups)
+      count += blockPorts.getNumPorts<PortKinds...>();
+    return count;
+  }
 };
 
 /// Smart-pointer around a `dynamatic::GroupMemoryPorts`, specializing it for
