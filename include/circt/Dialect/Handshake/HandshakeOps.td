@@ -1249,3 +1249,124 @@ def EndOp : Handshake_Op<"end", [Terminator]> {
     mlir::ValueRange getMemoryControls();
   }];
 }
+
+//===----------------------------------------------------------------------===//
+// Speculation operations
+//===----------------------------------------------------------------------===//
+
+def SpeculatorOp : Handshake_Op<"speculator"> {
+  let summary = "Central control unit of the speculative circuit.";
+  let description = [{
+    The speculator produces speculative data tokens when real data has
+    not yet arrived. The speculator is also responsible for deciding 
+    the correctness of its speculation.
+
+    It needs to send control tokens to save units, commit units, 
+    and save-commit units.
+
+    Example:
+    ```mlir
+    <SSA results> = speculator <SSA operands>
+    ```
+  }];
+
+  let arguments = (ins Variadic<AnyType> : $inputs);
+  let results = (outs Variadic<AnyType> : $outputs);
+  let assemblyFormat = [{
+    `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)
+  }];
+}
+
+def SpecSaveOp : Handshake_Op<"spec_save"> {
+  let summary = "Saves data tokens that interact in the speculative region.";
+  let description = [{
+    Save units are used to mark the beginning of the speculation region. 
+    Whenever a speculative token can interact with a non-speculative token, 
+    the non-speculative token needs to be saved. In case of correct speculation
+    or no speculation, the saved token can be dropped.
+
+    On the other hand, if the speculation was incorrect, the saved tokens 
+    need to be reinserted into the circuit to repeat the previously 
+    miscalculated computations.
+
+    Example:
+    ```mlir
+    <SSA results> = speculator <SSA operands>
+    ```
+  }];
+
+  let arguments = (ins Variadic<AnyType> : $inputs);
+  let results = (outs Variadic<AnyType> : $outputs);
+  let assemblyFormat = [{
+    `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)
+  }];
+}
+
+def SpecCommitOp : Handshake_Op<"spec_commit"> {
+  let summary = "Stall speculative data tokens until they are resolved.";
+  let description = [{
+    Commit units are used to mark the end of the speculation region. 
+    Commit units are used to stall speculative tokens until they receive 
+    the decision from the speculator. In case the speculation is correct, 
+    the speculative tokens are converted into non-speculative tokens and 
+    passed on to the rest of the circuit. 
+    Otherwise, the speculative tokens are discarded. 
+
+    Any non-speculative token can pass through the commit units 
+    without any stall.
+
+    Example:
+    ```mlir
+    <SSA results> = speculator <SSA operands>
+    ```
+  }];
+
+  let arguments = (ins Variadic<AnyType> : $inputs);
+  let results = (outs Variadic<AnyType> : $outputs);
+  let assemblyFormat = [{
+    `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)
+  }];
+}
+
+def SpecSaveCommitOp : Handshake_Op<"spec_save_commit"> {
+  let summary = "Lets all tokens pass and saves a copy of them.";
+  let description = [{
+    Save-Commits are used when speculation occurs in a loop.
+    To increase loop parallelism, the save-commit unit will let both
+    speculative and non-speculative tokens pass as well as save
+    a copy of them.
+
+    Example:
+    ```mlir
+    <SSA results> = speculator <SSA operands>
+    ```
+  }];
+
+  let arguments = (ins Variadic<AnyType> : $inputs);
+  let results = (outs Variadic<AnyType> : $outputs);
+  let assemblyFormat = [{
+    `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)
+  }];
+}
+
+def SpecSynchronizerOp : Handshake_Op<"spec_synchronizer"> {
+  let summary = "Make all tokens speculative if one input token is spec.";
+  let description = [{
+    Two basic blocks may represent multiple edges and have speculative and
+    non-speculative tokens interact.
+    Commit units can’t stop non-speculative tokens. As a result,
+    we need to add synchronizers before the commit units so that
+    if one of the tokens is speculative, all tokens become speculative.
+
+    Example:
+    ```mlir
+    <SSA results> = speculator <SSA operands>
+    ```
+  }];
+
+  let arguments = (ins Variadic<AnyType> : $inputs);
+  let results = (outs Variadic<AnyType> : $outputs);
+  let assemblyFormat = [{
+    `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)
+  }];
+}
