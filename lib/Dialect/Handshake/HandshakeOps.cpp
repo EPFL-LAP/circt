@@ -1739,27 +1739,24 @@ LogicalResult MemoryControllerOp::verify() {
 /// Common operand naming logic for memory controllers and LSQs.
 static std::string getMemOperandName(const FuncMemoryPorts &ports,
                                      unsigned int idx) {
-  if (idx == 0)
-    return "memref";
-
   // Iterate through all memory ports to find out the type of the operand
-  unsigned ctrlIdx = 0, loadIdx = 0, storeIdx = 0, inputIdx = idx - 1;
+  unsigned ctrlIdx = 0, loadIdx = 0, storeIdx = 0;
   for (const GroupMemoryPorts &blockPorts : ports.groups) {
     if (blockPorts.hasControl()) {
-      if (inputIdx == blockPorts.ctrlPort->getCtrlInputIndex())
+      if (idx == blockPorts.ctrlPort->getCtrlInputIndex())
         return "ctrl" + std::to_string(ctrlIdx);
       ++ctrlIdx;
     }
     for (const MemoryPort &accessPort : blockPorts.accessPorts) {
       if (std::optional<LoadPort> loadPort = dyn_cast<LoadPort>(accessPort)) {
-        if (loadPort->getAddrInputIndex() == inputIdx)
+        if (loadPort->getAddrInputIndex() == idx)
           return "ldAddr" + std::to_string(loadIdx);
         ++loadIdx;
       } else {
         std::optional<StorePort> storePort = cast<StorePort>(accessPort);
-        if (storePort->getAddrInputIndex() == inputIdx)
+        if (storePort->getAddrInputIndex() == idx)
           return "stAddr" + std::to_string(storeIdx);
-        if (storePort->getDataInputIndex() == inputIdx)
+        if (storePort->getDataInputIndex() == idx)
           return "stData" + std::to_string(storeIdx);
         ++storeIdx;
       }
@@ -1772,13 +1769,16 @@ static std::string getMemOperandName(const FuncMemoryPorts &ports,
 std::string MemoryControllerOp::getOperandName(unsigned int idx) {
   assert(idx < getNumOperands() && "index too high");
 
+  if (idx == 0)
+    return "memref";
+
   // Try to get the operand name from the regular ports
   MCPorts mcPorts = getPorts();
-  if (std::string name = getMemOperandName(mcPorts, idx); !name.empty())
+  unsigned inputIdx = idx - 1;
+  if (std::string name = getMemOperandName(mcPorts, inputIdx); !name.empty())
     return name;
 
   // Try to get the operand name from a potential LSQ port
-  unsigned inputIdx = idx - 1;
   if (mcPorts.hasConnectionToLSQ()) {
     LSQLoadStorePort lsqPort = mcPorts.getLSQPort();
     if (lsqPort.getLoadAddrInputIndex() == inputIdx)
@@ -2083,14 +2083,18 @@ LogicalResult LSQOp::verify() {
 std::string LSQOp::getOperandName(unsigned int idx) {
   assert(idx < getNumOperands() && "index too high");
 
+  bool connectsToMC = isConnectedToMC();
+  if (idx == 0 && !connectsToMC)
+    return "memref";
+
   // Try to get the operand name from the regular ports
   LSQPorts lsqPorts = getPorts();
-  if (std::string name = getMemOperandName(lsqPorts, idx); !name.empty())
+  unsigned inputIdx = idx - (connectsToMC ? 0 : 1);
+  if (std::string name = getMemOperandName(lsqPorts, inputIdx); !name.empty())
     return name;
 
   // Try to get the operand name from a potential MC port
-  unsigned inputIdx = idx - 1;
-  if (lsqPorts.hasConnectionToMC()) {
+  if (connectsToMC) {
     MCLoadStorePort mcPort = lsqPorts.getMCPort();
     if (mcPort.getLoadDataInputIndex() == inputIdx)
       return "mcLdData";
