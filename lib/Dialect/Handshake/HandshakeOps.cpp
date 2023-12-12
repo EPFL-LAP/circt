@@ -1589,21 +1589,19 @@ static LogicalResult getMCPorts(MCPorts &mcPorts) {
        ++currentIt) {
     auto input = *currentIt;
     Operation *portOp = backtrackToMemInput(input.value());
-    if (!portOp)
-      return mcPorts.memOp->emitError()
-             << "Input (at index " << input.index()
-             << ") of memory interface could not be identified.";
 
     // Identify the block the input operation belongs to
     /// TODO: change hardcoded "bb" to attribute mnemonic once the basic block
     /// is made part of the Handshake dialect
-    auto ctrlBlock = dyn_cast_if_present<IntegerAttr>(portOp->getAttr("bb"));
     unsigned portOpBlock = 0;
-    if (ctrlBlock) {
-      portOpBlock = ctrlBlock.getUInt();
-    } else if (isa<handshake::MCLoadOp, handshake::MCStoreOp>(portOp)) {
-      return portOp->emitError() << "Input operation of memory interface "
-                                    "does not belong to any basic block.";
+    if (portOp) {
+      auto ctrlBlock = dyn_cast_if_present<IntegerAttr>(portOp->getAttr("bb"));
+      if (ctrlBlock) {
+        portOpBlock = ctrlBlock.getUInt();
+      } else if (isa<handshake::MCLoadOp, handshake::MCStoreOp>(portOp)) {
+        return portOp->emitError() << "Input operation of memory interface "
+                                      "does not belong to any basic block.";
+      }
     }
 
     // Checks wheter an access port belongs to the correct block
@@ -1687,11 +1685,18 @@ static LogicalResult getMCPorts(MCPorts &mcPorts) {
       return success();
     };
 
-    LogicalResult res = llvm::TypeSwitch<Operation *, LogicalResult>(portOp)
-                            .Case<handshake::MCLoadOp>(handleLoad)
-                            .Case<handshake::MCStoreOp>(handleStore)
-                            .Case<handshake::LSQOp>(handleLSQ)
-                            .Default(handleControl);
+    LogicalResult res = failure();
+    if (!portOp) {
+      // Control signal may come directly from function arguments
+      res = handleControl(portOp);
+    } else {
+      res = llvm::TypeSwitch<Operation *, LogicalResult>(portOp)
+                .Case<handshake::MCLoadOp>(handleLoad)
+                .Case<handshake::MCStoreOp>(handleStore)
+                .Case<handshake::LSQOp>(handleLSQ)
+                .Default(handleControl);
+    }
+
     // Forward failure when parsing parts
     if (failed(res))
       return failure();
@@ -1964,11 +1969,6 @@ static LogicalResult getLSQPorts(LSQPorts &lsqPorts) {
   for (auto currentIt = inputIter.begin(); currentIt != inputIter.end();
        ++currentIt) {
     auto input = *currentIt;
-    Operation *portOp = backtrackToMemInput(input.value());
-    if (!portOp)
-      return lsqPorts.memOp->emitError()
-             << "Input (at index " << input.index()
-             << ") of memory interface could not be identified.";
 
     auto handleLoad = [&](handshake::LSQLoadOp loadOp) -> LogicalResult {
       if (failed(checkAndSetBitwidth(input.value(), lsqPorts.addrWidth)) ||
@@ -2034,11 +2034,19 @@ static LogicalResult getLSQPorts(LSQPorts &lsqPorts) {
       return success();
     };
 
-    LogicalResult res = llvm::TypeSwitch<Operation *, LogicalResult>(portOp)
-                            .Case<handshake::LSQLoadOp>(handleLoad)
-                            .Case<handshake::LSQStoreOp>(handleStore)
-                            .Case<handshake::MemoryControllerOp>(handleMC)
-                            .Default(handleControl);
+    Operation *portOp = backtrackToMemInput(input.value());
+    LogicalResult res = failure();
+    if (!portOp) {
+      // Control signal may come directly from function arguments
+      res = handleControl(portOp);
+    } else {
+      res = llvm::TypeSwitch<Operation *, LogicalResult>(portOp)
+                .Case<handshake::LSQLoadOp>(handleLoad)
+                .Case<handshake::LSQStoreOp>(handleStore)
+                .Case<handshake::MemoryControllerOp>(handleMC)
+                .Default(handleControl);
+    }
+
     // Forward failure when parsing parts
     if (failed(res))
       return failure();
