@@ -2199,9 +2199,17 @@ MCLoadPort::MCLoadPort(handshake::MCLoadOp loadOp, unsigned addrInputIdx,
                        unsigned dataOutputIdx)
     : LoadPort(loadOp, addrInputIdx, dataOutputIdx, Kind::MC_LOAD) {}
 
+handshake::MCLoadOp MCLoadPort::getMCLoadOp() const {
+  return cast<handshake::MCLoadOp>(portOp);
+}
+
 LSQLoadPort::LSQLoadPort(handshake::LSQLoadOp loadOp, unsigned addrInputIdx,
                          unsigned dataOutputIdx)
     : LoadPort(loadOp, addrInputIdx, dataOutputIdx, Kind::LSQ_LOAD) {}
+
+handshake::LSQLoadOp LSQLoadPort::getLSQLoadOp() const {
+  return cast<handshake::LSQLoadOp>(portOp);
+}
 
 // StorePort: StoreOpInterface -> mem. interface
 
@@ -2209,14 +2217,22 @@ StorePort::StorePort(handshake::StoreOpInterface storeOp, unsigned addrInputIdx,
                      Kind kind)
     : MemoryPort(storeOp, {addrInputIdx, addrInputIdx + 1}, kind){};
 
+handshake::StoreOpInterface StorePort::getStoreOp() const {
+  return cast<handshake::StoreOpInterface>(portOp);
+}
+
 MCStorePort::MCStorePort(handshake::MCStoreOp storeOp, unsigned addrInputIdx)
     : StorePort(storeOp, addrInputIdx, Kind::MC_STORE) {}
+
+handshake::MCStoreOp MCStorePort::getMCStoreOp() const {
+  return cast<handshake::MCStoreOp>(portOp);
+}
 
 LSQStorePort::LSQStorePort(handshake::LSQStoreOp storeOp, unsigned addrInputIdx)
     : StorePort(storeOp, addrInputIdx, Kind::LSQ_STORE) {}
 
-handshake::StoreOpInterface StorePort::getStoreOp() const {
-  return cast<handshake::StoreOpInterface>(portOp);
+handshake::LSQStoreOp LSQStorePort::getLSQStoreOp() const {
+  return cast<handshake::LSQStoreOp>(portOp);
 }
 
 // LSQLoadStorePort: LSQOp <-> mem. interface
