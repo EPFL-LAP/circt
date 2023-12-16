@@ -1254,10 +1254,12 @@ def EndOp : Handshake_Op<"end", [Terminator]> {
 // Speculation operations
 //===----------------------------------------------------------------------===//
 
-def SpeculatorOp : Handshake_Op<"speculator"> {
+def SpeculatorOp : Handshake_Op<"speculator", [ 
+  TypesMatchWith<"data operand type matches data result type",
+                 "dataIn", "dataOut", "$_self">]> {
   let summary = "Central control unit of the speculative circuit.";
   let description = [{
-    The speculator produces speculative data tokens when real data has
+    The speculator produces speculative tokens when real data has
     not yet arrived. The speculator is also responsible for deciding 
     the correctness of its speculation.
 
@@ -1266,18 +1268,23 @@ def SpeculatorOp : Handshake_Op<"speculator"> {
 
     Example:
     ```mlir
-    <SSA results> = speculator <SSA operands>
+    %dataOut, %saveCtrl, %commitCtrl, %SCControl1, %SCControl2, 
+      %SCBranchControl = "handshake.speculator"(%dataOut) 
+      {name = #handshake.name<"speculator0">} : 
+      (i1) -> (i1, i1, i1, i3, i3, i1)
     ```
   }];
 
-  let arguments = (ins Variadic<AnyType> : $inputs);
-  let results = (outs Variadic<AnyType> : $outputs);
-  let assemblyFormat = [{
-    `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)
-  }];
+  let arguments = (ins AnyType : $dataIn);
+  let results = (outs AnyType : $dataOut,
+                  I1 : $saveCtrl, I1 : $commitCtrl, 
+                  I<3> : $SCControl1, I<3> : $SCControl2, 
+                  I1 : $SCBranchControl);
 }
 
-def SpecSaveOp : Handshake_Op<"spec_save"> {
+def SpecSaveOp : Handshake_Op<"spec_save", [
+  TypesMatchWith<"data operand type matches data result type",
+                 "dataIn", "dataOut", "$_self">] > {
   let summary = "Saves data tokens that interact in the speculative region.";
   let description = [{
     Save units are used to mark the beginning of the speculation region. 
@@ -1291,18 +1298,18 @@ def SpecSaveOp : Handshake_Op<"spec_save"> {
 
     Example:
     ```mlir
-    <SSA results> = speculator <SSA operands>
+    %23 = "handshake.spec_save"(%22, %saveCtrl) 
+      {name = #handshake.name<"spec_save1">} : (i1, i1) -> i1
     ```
   }];
 
-  let arguments = (ins Variadic<AnyType> : $inputs);
-  let results = (outs Variadic<AnyType> : $outputs);
-  let assemblyFormat = [{
-    `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)
-  }];
+  let arguments = (ins AnyType : $dataIn, I1 : $ctrl);
+  let results = (outs AnyType : $dataOut);
 }
 
-def SpecCommitOp : Handshake_Op<"spec_commit"> {
+def SpecCommitOp : Handshake_Op<"spec_commit", [
+  TypesMatchWith<"data operand type matches data result type",
+                    "dataIn", "dataOut", "$_self">] > {
   let summary = "Stall speculative data tokens until they are resolved.";
   let description = [{
     Commit units are used to mark the end of the speculation region. 
@@ -1317,36 +1324,58 @@ def SpecCommitOp : Handshake_Op<"spec_commit"> {
 
     Example:
     ```mlir
-    <SSA results> = speculator <SSA operands>
+     %40 = "handshake.spec_commit"(%result, %commitCtrl) 
+      {name = #handshake.name<"spec_commit0">} : (i1, i1) -> i1
     ```
   }];
 
-  let arguments = (ins Variadic<AnyType> : $inputs);
-  let results = (outs Variadic<AnyType> : $outputs);
-  let assemblyFormat = [{
-    `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)
-  }];
+  let arguments = (ins AnyType : $dataIn, I1 : $ctrl);
+  let results = (outs AnyType : $dataOut);
 }
 
-def SpecSaveCommitOp : Handshake_Op<"spec_save_commit"> {
+def SpecSaveCommitOp : Handshake_Op<"spec_save_commit", [
+  TypesMatchWith<"data operand type matches data result type",
+                    "dataIn", "dataOut", "$_self">]> {
   let summary = "Lets all tokens pass and saves a copy of them.";
   let description = [{
     Save-Commits are used when speculation occurs in a loop.
     To increase loop parallelism, the save-commit unit will let both
     speculative and non-speculative tokens pass as well as save
     a copy of them.
-
+ 
     Example:
     ```mlir
-    <SSA results> = speculator <SSA operands>
+    %44 = "handshake.spec_save_commit"(%falseResult_7, %SCBranchControl) 
+      {name = #handshake.name<"spec_save_commit1">} : (i1, i3) -> i1
     ```
   }];
 
-  let arguments = (ins Variadic<AnyType> : $inputs);
-  let results = (outs Variadic<AnyType> : $outputs);
-  let assemblyFormat = [{
-    `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)
+  let arguments = (ins AnyType : $dataIn, I<3> : $ctrl);
+  let results = (outs AnyType : $dataOut);
+}
+
+def SpeculatingBranchOp : Handshake_Op<"speculating_branch", [
+  TypesMatchWith<"data operand type matches true branch result type",
+                    "dataOperand", "trueResult", "$_self">,
+  TypesMatchWith<"data operand type matches false branch result type",
+                    "dataOperand", "falseResult", "$_self">
+]> {
+  let summary = "speculating branch operation";
+  let description = [{
+     The speculating branch operation represents a conditional
+     branch that decides the condition based on if a token Value is
+     speculative or not. 
+
+     Example:
+     ```mlir
+    %trueResult_12, %falseResult_13 = "handshake.speculating_branch"(
+      %trueResult_16, %42#0) {name = #handshake.name<"speculating_branch0">} : 
+      (i11, i1) -> (i1, i1)
+     ```
   }];
+
+  let arguments = (ins AnyType : $tagFromOperand, AnyType : $dataOperand);
+  let results = (outs AnyType : $trueResult, AnyType : $falseResult);
 }
 
 def SpecSynchronizerOp : Handshake_Op<"spec_synchronizer"> {
@@ -1366,7 +1395,4 @@ def SpecSynchronizerOp : Handshake_Op<"spec_synchronizer"> {
 
   let arguments = (ins Variadic<AnyType> : $inputs);
   let results = (outs Variadic<AnyType> : $outputs);
-  let assemblyFormat = [{
-    `(` $inputs `)` attr-dict `:` functional-type($inputs, $outputs)
-  }];
 }
