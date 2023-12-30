@@ -1377,22 +1377,3 @@ def SpeculatingBranchOp : Handshake_Op<"speculating_branch", [
   let arguments = (ins AnyType : $tagFromOperand, AnyType : $dataOperand);
   let results = (outs AnyType : $trueResult, AnyType : $falseResult);
 }
-
-def SpecSynchronizerOp : Handshake_Op<"spec_synchronizer"> {
-  let summary = "Make all tokens speculative if one input token is spec.";
-  let description = [{
-    Two basic blocks may represent multiple edges and have speculative and
-    non-speculative tokens interact.
-    Commit units can’t stop non-speculative tokens. As a result,
-    we need to add synchronizers before the commit units so that
-    if one of the tokens is speculative, all tokens become speculative.
-
-    Example:
-    ```mlir
-    <SSA results> = speculator <SSA operands>
-    ```
-  }];
-
-  let arguments = (ins Variadic<AnyType> : $inputs);
-  let results = (outs Variadic<AnyType> : $outputs);
-}
