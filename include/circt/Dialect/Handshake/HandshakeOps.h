@@ -195,7 +195,7 @@ public:
   LoadPort(const MemoryPort &memPort) : MemoryPort(memPort){};
 
   /// Returns the load operation the port is associated to.
-  inline circt::handshake::LoadOpInterface getLoadOp() const;
+  circt::handshake::LoadOpInterface getLoadOp() const;
 
   /// Returns the index of the load address value in the memory interface's
   /// inputs.
@@ -223,6 +223,9 @@ protected:
 // Memory load port for memory controllers.
 class MCLoadPort : public LoadPort {
 public:
+  /// Copy-constructor from abstract memory port for LLVM-style RTTI.
+  MCLoadPort(const MemoryPort &memPort) : LoadPort(memPort){};
+
   /// Constructs the load port from an MC load operation, the index of the
   /// load's address output in the memory interface's inputs, and the index of
   /// the load's data input in the memory interface's outputs.
@@ -230,7 +233,7 @@ public:
              unsigned dataOutputIdx);
 
   /// Returns the MC load operation the port is associated to.
-  inline circt::handshake::MCLoadOp getMCLoadOp() const;
+  circt::handshake::MCLoadOp getMCLoadOp() const;
 
   /// Used by LLVM-style RTTI to establish `isa` relationships.
   static inline bool classof(const MemoryPort *port) {
@@ -241,13 +244,16 @@ public:
 // Memory load port for LSQs.
 class LSQLoadPort : public LoadPort {
 public:
+  /// Copy-constructor from abstract memory port for LLVM-style RTTI.
+  LSQLoadPort(const MemoryPort &memPort) : LoadPort(memPort){};
+
   /// Same semantics as the `LoadPort` constructor but works specifically with a
   /// load operation that connects to an LSQ.
   LSQLoadPort(circt::handshake::LSQLoadOp loadOp, unsigned addrInputIdx,
               unsigned dataOutputIdx);
 
-  /// Returns the MC load operation the port is associated to.
-  inline circt::handshake::LSQLoadOp getLSQLoadOp() const;
+  /// Returns the LSQ load operation the port is associated to.
+  circt::handshake::LSQLoadOp getLSQLoadOp() const;
 
   /// Used by LLVM-style RTTI to establish `isa` relationships.
   static inline bool classof(const MemoryPort *port) {
@@ -270,7 +276,7 @@ public:
   StorePort(const MemoryPort &memPort) : MemoryPort(memPort){};
 
   /// Returns the store operation the port is associated to.
-  inline circt::handshake::StoreOpInterface getStoreOp() const;
+  circt::handshake::StoreOpInterface getStoreOp() const;
 
   /// Returns the index of the store address value in the memory interface's
   /// inputs.
@@ -297,12 +303,15 @@ protected:
 // Memory store port for memory controllers.
 class MCStorePort : public StorePort {
 public:
+  /// Copy-constructor from abstract memory port for LLVM-style RTTI.
+  MCStorePort(const MemoryPort &memPort) : StorePort(memPort){};
+
   /// Same semantics as the `LoadPort` constructor but works specifically with a
   /// load operation that connects to an MC.
   MCStorePort(circt::handshake::MCStoreOp mcStoreOp, unsigned addrInputIdx);
 
   /// Returns the MC store operation the port is associated to.
-  inline circt::handshake::MCStoreOp getMCStoreOp() const;
+  circt::handshake::MCStoreOp getMCStoreOp() const;
 
   /// Used by LLVM-style RTTI to establish `isa` relationships.
   static inline bool classof(const MemoryPort *port) {
@@ -313,12 +322,15 @@ public:
 // Memory store port for LSQs.
 class LSQStorePort : public StorePort {
 public:
+  /// Copy-constructor from abstract memory port for LLVM-style RTTI.
+  LSQStorePort(const MemoryPort &memPort) : StorePort(memPort){};
+
   /// Same semantics as the `LoadPort` constructor but works specifically with a
-  /// load operation that connects to an MC.
+  /// load operation that connects to an LSQ.
   LSQStorePort(circt::handshake::LSQStoreOp lsqStoreOp, unsigned addrInputIdx);
 
-  /// Returns the MC store operation the port is associated to.
-  inline circt::handshake::LSQStoreOp getLSQStoreOp() const;
+  /// Returns the LSQ store operation the port is associated to.
+  circt::handshake::LSQStoreOp getLSQStoreOp() const;
 
   /// Used by LLVM-style RTTI to establish `isa` relationships.
   static inline bool classof(const MemoryPort *port) {
@@ -355,7 +367,7 @@ public:
   LSQLoadStorePort(const MemoryPort &memPort) : MemoryPort(memPort){};
 
   /// Returns the LSQ the port is associated to.
-  inline circt::handshake::LSQOp getLSQOp() const;
+  circt::handshake::LSQOp getLSQOp() const;
 
   /// Returns the index of the load address value in the memory interface's
   /// inputs.
@@ -409,7 +421,7 @@ public:
   MCLoadStorePort(const MemoryPort &memPort) : MemoryPort(memPort){};
 
   /// Returns the MC the port is associated to.
-  inline circt::handshake::MemoryControllerOp getMCOp() const;
+  circt::handshake::MemoryControllerOp getMCOp() const;
 
   /// Returns the index of the load address value in the memory interface's
   /// outputs.

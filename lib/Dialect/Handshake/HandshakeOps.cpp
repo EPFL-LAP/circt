@@ -1589,21 +1589,19 @@ static LogicalResult getMCPorts(MCPorts &mcPorts) {
        ++currentIt) {
     auto input = *currentIt;
     Operation *portOp = backtrackToMemInput(input.value());
-    if (!portOp)
-      return mcPorts.memOp->emitError()
-             << "Input (at index " << input.index()
-             << ") of memory interface could not be identified.";
 
     // Identify the block the input operation belongs to
     /// TODO: change hardcoded "bb" to attribute mnemonic once the basic block
     /// is made part of the Handshake dialect
-    auto ctrlBlock = dyn_cast_if_present<IntegerAttr>(portOp->getAttr("bb"));
     unsigned portOpBlock = 0;
-    if (ctrlBlock) {
-      portOpBlock = ctrlBlock.getUInt();
-    } else if (isa<handshake::MCLoadOp, handshake::MCStoreOp>(portOp)) {
-      return portOp->emitError() << "Input operation of memory interface "
-                                    "does not belong to any basic block.";
+    if (portOp) {
+      auto ctrlBlock = dyn_cast_if_present<IntegerAttr>(portOp->getAttr("bb"));
+      if (ctrlBlock) {
+        portOpBlock = ctrlBlock.getUInt();
+      } else if (isa<handshake::MCLoadOp, handshake::MCStoreOp>(portOp)) {
+        return portOp->emitError() << "Input operation of memory interface "
+                                      "does not belong to any basic block.";
+      }
     }
 
     // Checks wheter an access port belongs to the correct block
@@ -1687,11 +1685,18 @@ static LogicalResult getMCPorts(MCPorts &mcPorts) {
       return success();
     };
 
-    LogicalResult res = llvm::TypeSwitch<Operation *, LogicalResult>(portOp)
-                            .Case<handshake::MCLoadOp>(handleLoad)
-                            .Case<handshake::MCStoreOp>(handleStore)
-                            .Case<handshake::LSQOp>(handleLSQ)
-                            .Default(handleControl);
+    LogicalResult res = failure();
+    if (!portOp) {
+      // Control signal may come directly from function arguments
+      res = handleControl(portOp);
+    } else {
+      res = llvm::TypeSwitch<Operation *, LogicalResult>(portOp)
+                .Case<handshake::MCLoadOp>(handleLoad)
+                .Case<handshake::MCStoreOp>(handleStore)
+                .Case<handshake::LSQOp>(handleLSQ)
+                .Default(handleControl);
+    }
+
     // Forward failure when parsing parts
     if (failed(res))
       return failure();
@@ -1739,27 +1744,24 @@ LogicalResult MemoryControllerOp::verify() {
 /// Common operand naming logic for memory controllers and LSQs.
 static std::string getMemOperandName(const FuncMemoryPorts &ports,
                                      unsigned int idx) {
-  if (idx == 0)
-    return "memref";
-
   // Iterate through all memory ports to find out the type of the operand
-  unsigned ctrlIdx = 0, loadIdx = 0, storeIdx = 0, inputIdx = idx - 1;
+  unsigned ctrlIdx = 0, loadIdx = 0, storeIdx = 0;
   for (const GroupMemoryPorts &blockPorts : ports.groups) {
     if (blockPorts.hasControl()) {
-      if (inputIdx == blockPorts.ctrlPort->getCtrlInputIndex())
+      if (idx == blockPorts.ctrlPort->getCtrlInputIndex())
         return "ctrl" + std::to_string(ctrlIdx);
       ++ctrlIdx;
     }
     for (const MemoryPort &accessPort : blockPorts.accessPorts) {
       if (std::optional<LoadPort> loadPort = dyn_cast<LoadPort>(accessPort)) {
-        if (loadPort->getAddrInputIndex() == inputIdx)
+        if (loadPort->getAddrInputIndex() == idx)
           return "ldAddr" + std::to_string(loadIdx);
         ++loadIdx;
       } else {
         std::optional<StorePort> storePort = cast<StorePort>(accessPort);
-        if (storePort->getAddrInputIndex() == inputIdx)
+        if (storePort->getAddrInputIndex() == idx)
           return "stAddr" + std::to_string(storeIdx);
-        if (storePort->getDataInputIndex() == inputIdx)
+        if (storePort->getDataInputIndex() == idx)
           return "stData" + std::to_string(storeIdx);
         ++storeIdx;
       }
@@ -1772,13 +1774,16 @@ static std::string getMemOperandName(const FuncMemoryPorts &ports,
 std::string MemoryControllerOp::getOperandName(unsigned int idx) {
   assert(idx < getNumOperands() && "index too high");
 
+  if (idx == 0)
+    return "memref";
+
   // Try to get the operand name from the regular ports
   MCPorts mcPorts = getPorts();
-  if (std::string name = getMemOperandName(mcPorts, idx); !name.empty())
+  unsigned inputIdx = idx - 1;
+  if (std::string name = getMemOperandName(mcPorts, inputIdx); !name.empty())
     return name;
 
   // Try to get the operand name from a potential LSQ port
-  unsigned inputIdx = idx - 1;
   if (mcPorts.hasConnectionToLSQ()) {
     LSQLoadStorePort lsqPort = mcPorts.getLSQPort();
     if (lsqPort.getLoadAddrInputIndex() == inputIdx)
@@ -1964,11 +1969,6 @@ static LogicalResult getLSQPorts(LSQPorts &lsqPorts) {
   for (auto currentIt = inputIter.begin(); currentIt != inputIter.end();
        ++currentIt) {
     auto input = *currentIt;
-    Operation *portOp = backtrackToMemInput(input.value());
-    if (!portOp)
-      return lsqPorts.memOp->emitError()
-             << "Input (at index " << input.index()
-             << ") of memory interface could not be identified.";
 
     auto handleLoad = [&](handshake::LSQLoadOp loadOp) -> LogicalResult {
       if (failed(checkAndSetBitwidth(input.value(), lsqPorts.addrWidth)) ||
@@ -2034,11 +2034,19 @@ static LogicalResult getLSQPorts(LSQPorts &lsqPorts) {
       return success();
     };
 
-    LogicalResult res = llvm::TypeSwitch<Operation *, LogicalResult>(portOp)
-                            .Case<handshake::LSQLoadOp>(handleLoad)
-                            .Case<handshake::LSQStoreOp>(handleStore)
-                            .Case<handshake::MemoryControllerOp>(handleMC)
-                            .Default(handleControl);
+    Operation *portOp = backtrackToMemInput(input.value());
+    LogicalResult res = failure();
+    if (!portOp) {
+      // Control signal may come directly from function arguments
+      res = handleControl(portOp);
+    } else {
+      res = llvm::TypeSwitch<Operation *, LogicalResult>(portOp)
+                .Case<handshake::LSQLoadOp>(handleLoad)
+                .Case<handshake::LSQStoreOp>(handleStore)
+                .Case<handshake::MemoryControllerOp>(handleMC)
+                .Default(handleControl);
+    }
+
     // Forward failure when parsing parts
     if (failed(res))
       return failure();
@@ -2083,14 +2091,18 @@ LogicalResult LSQOp::verify() {
 std::string LSQOp::getOperandName(unsigned int idx) {
   assert(idx < getNumOperands() && "index too high");
 
+  bool connectsToMC = isConnectedToMC();
+  if (idx == 0 && !connectsToMC)
+    return "memref";
+
   // Try to get the operand name from the regular ports
   LSQPorts lsqPorts = getPorts();
-  if (std::string name = getMemOperandName(lsqPorts, idx); !name.empty())
+  unsigned inputIdx = idx - (connectsToMC ? 0 : 1);
+  if (std::string name = getMemOperandName(lsqPorts, inputIdx); !name.empty())
     return name;
 
   // Try to get the operand name from a potential MC port
-  unsigned inputIdx = idx - 1;
-  if (lsqPorts.hasConnectionToMC()) {
+  if (connectsToMC) {
     MCLoadStorePort mcPort = lsqPorts.getMCPort();
     if (mcPort.getLoadDataInputIndex() == inputIdx)
       return "mcLdData";
@@ -2187,9 +2199,17 @@ MCLoadPort::MCLoadPort(handshake::MCLoadOp loadOp, unsigned addrInputIdx,
                        unsigned dataOutputIdx)
     : LoadPort(loadOp, addrInputIdx, dataOutputIdx, Kind::MC_LOAD) {}
 
+handshake::MCLoadOp MCLoadPort::getMCLoadOp() const {
+  return cast<handshake::MCLoadOp>(portOp);
+}
+
 LSQLoadPort::LSQLoadPort(handshake::LSQLoadOp loadOp, unsigned addrInputIdx,
                          unsigned dataOutputIdx)
     : LoadPort(loadOp, addrInputIdx, dataOutputIdx, Kind::LSQ_LOAD) {}
+
+handshake::LSQLoadOp LSQLoadPort::getLSQLoadOp() const {
+  return cast<handshake::LSQLoadOp>(portOp);
+}
 
 // StorePort: StoreOpInterface -> mem. interface
 
@@ -2197,14 +2217,22 @@ StorePort::StorePort(handshake::StoreOpInterface storeOp, unsigned addrInputIdx,
                      Kind kind)
     : MemoryPort(storeOp, {addrInputIdx, addrInputIdx + 1}, kind){};
 
+handshake::StoreOpInterface StorePort::getStoreOp() const {
+  return cast<handshake::StoreOpInterface>(portOp);
+}
+
 MCStorePort::MCStorePort(handshake::MCStoreOp storeOp, unsigned addrInputIdx)
     : StorePort(storeOp, addrInputIdx, Kind::MC_STORE) {}
+
+handshake::MCStoreOp MCStorePort::getMCStoreOp() const {
+  return cast<handshake::MCStoreOp>(portOp);
+}
 
 LSQStorePort::LSQStorePort(handshake::LSQStoreOp storeOp, unsigned addrInputIdx)
     : StorePort(storeOp, addrInputIdx, Kind::LSQ_STORE) {}
 
-handshake::StoreOpInterface StorePort::getStoreOp() const {
-  return cast<handshake::StoreOpInterface>(portOp);
+handshake::LSQStoreOp LSQStorePort::getLSQStoreOp() const {
+  return cast<handshake::LSQStoreOp>(portOp);
 }
 
 // LSQLoadStorePort: LSQOp <-> mem. interface
