@@ -1263,23 +1263,26 @@ def SpeculatorOp : Handshake_Op<"speculator", [
     not yet arrived. The speculator is also responsible for deciding 
     the correctness of its speculation.
 
-    It needs to send control tokens to save units, commit units, 
-    and save-commit units.
+    It needs to send control tokens to save units and commit units
+    ($saveCtrl, $commitCtrl). For save-commit units, three control
+    signals are needed. $SCCtrl is connected directly, while 
+    $SCCtrlOptional replicates the branches that $dataOut
+    follows and might not reach a save-commit. $SCBranchCtrl is needed
+    in the replicated branches to discard the optional signal.
 
     Example:
     ```mlir
-    %dataOut, %saveCtrl, %commitCtrl, %SCControl1, %SCControl2, 
-      %SCBranchControl = "handshake.speculator"(%dataOut) 
-      {name = #handshake.name<"speculator0">} : 
-      (i1) -> (i1, i1, i1, i3, i3, i1)
+    %dataOut, %saveCtrl, %commitCtrl, %SCCtrl, 
+      %SCCtrlOptional, %SCBranchCtrl = speculator %dataIn : i1
     ```
   }];
 
   let arguments = (ins AnyType : $dataIn);
   let results = (outs AnyType : $dataOut,
                   I1 : $saveCtrl, I1 : $commitCtrl, 
-                  I<3> : $SCControl1, I<3> : $SCControl2, 
-                  I1 : $SCBranchControl);
+                  I<3> : $SCCtrl, I<3> : $SCCtrlOptional, 
+                  I1 : $SCBranchCtrl);
+  let assemblyFormat = "$dataIn attr-dict `:` qualified(type($dataIn)) ";
 }
 
 def SpecSaveOp : Handshake_Op<"spec_save", [
@@ -1298,13 +1301,13 @@ def SpecSaveOp : Handshake_Op<"spec_save", [
 
     Example:
     ```mlir
-    %23 = "handshake.spec_save"(%22, %saveCtrl) 
-      {name = #handshake.name<"spec_save1">} : (i1, i1) -> i1
+    %dataOut = spec_save[%ctrl] %dataIn : i11
     ```
   }];
 
   let arguments = (ins AnyType : $dataIn, I1 : $ctrl);
   let results = (outs AnyType : $dataOut);
+  let assemblyFormat = " `[` $ctrl `]` $dataIn attr-dict `:` qualified(type($dataIn)) ";
 }
 
 def SpecCommitOp : Handshake_Op<"spec_commit", [
@@ -1324,13 +1327,13 @@ def SpecCommitOp : Handshake_Op<"spec_commit", [
 
     Example:
     ```mlir
-     %40 = "handshake.spec_commit"(%result, %commitCtrl) 
-      {name = #handshake.name<"spec_commit0">} : (i1, i1) -> i1
+    %dataOut = spec_commit[%ctrl] %dataIn : i11
     ```
   }];
 
   let arguments = (ins AnyType : $dataIn, I1 : $ctrl);
   let results = (outs AnyType : $dataOut);
+  let assemblyFormat = " `[` $ctrl `]` $dataIn attr-dict `:` qualified(type($dataIn)) ";
 }
 
 def SpecSaveCommitOp : Handshake_Op<"spec_save_commit", [
@@ -1345,13 +1348,13 @@ def SpecSaveCommitOp : Handshake_Op<"spec_save_commit", [
  
     Example:
     ```mlir
-    %44 = "handshake.spec_save_commit"(%falseResult_7, %SCBranchControl) 
-      {name = #handshake.name<"spec_save_commit1">} : (i1, i3) -> i1
+    %dataOut = spec_save_commit[%ctrl] %dataIn : i11
     ```
   }];
 
   let arguments = (ins AnyType : $dataIn, I<3> : $ctrl);
   let results = (outs AnyType : $dataOut);
+  let assemblyFormat = " `[` $ctrl `]` $dataIn attr-dict `:` qualified(type($dataIn)) ";
 }
 
 def SpeculatingBranchOp : Handshake_Op<"speculating_branch", [
@@ -1366,14 +1369,18 @@ def SpeculatingBranchOp : Handshake_Op<"speculating_branch", [
      branch that decides the condition based on if a token Value is
      speculative or not. 
 
+     The $tagFromOperand field is the condition. Depending on wether the data
+     is speculative or not, $dataOperand will be send to $trueResult or 
+     $falseResult. The speculative tag is a fictious attribute.
+
      Example:
      ```mlir
-    %trueResult_12, %falseResult_13 = "handshake.speculating_branch"(
-      %trueResult_16, %42#0) {name = #handshake.name<"speculating_branch0">} : 
-      (i11, i1) -> (i1, i1)
+     %trueResult, %falseResult = 
+       speculating_branch[%tagFromOperand] %dataOperand : i32, i1
      ```
   }];
 
   let arguments = (ins AnyType : $tagFromOperand, AnyType : $dataOperand);
   let results = (outs AnyType : $trueResult, AnyType : $falseResult);
+  let assemblyFormat = " `[` $tagFromOperand `]` $dataOperand attr-dict `:` qualified(type($tagFromOperand)) `,` qualified(type($dataOperand)) ";
 }
