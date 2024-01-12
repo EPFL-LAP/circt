@@ -1265,22 +1265,22 @@ def SpeculatorOp : Handshake_Op<"speculator", [
 
     It needs to send control tokens to save units and commit units
     ($saveCtrl, $commitCtrl). For save-commit units, three control
-    signals are needed. $SCCtrl is connected directly, while 
-    $SCCtrlOptional replicates the branches that $dataOut
+    signals are needed. $SCSaveCtrl is connected directly, while 
+    $SCCommitCtrl replicates the branches that $dataOut
     follows and might not reach a save-commit. $SCBranchCtrl is needed
-    in the replicated branches to discard the optional signal.
+    in the replicated branches to discard the latter signal.
 
     Example:
     ```mlir
-    %dataOut, %saveCtrl, %commitCtrl, %SCCtrl, 
-      %SCCtrlOptional, %SCBranchCtrl = speculator %dataIn : i1
+    %dataOut, %saveCtrl, %commitCtrl, %SCSaveCtrl, 
+      %SCCommitCtrl, %SCBranchCtrl = speculator %dataIn : i1
     ```
   }];
 
   let arguments = (ins AnyType : $dataIn);
   let results = (outs AnyType : $dataOut,
                   I1 : $saveCtrl, I1 : $commitCtrl, 
-                  I<3> : $SCCtrl, I<3> : $SCCtrlOptional, 
+                  I<3> : $SCSaveCtrl, I<3> : $SCCommitCtrl, 
                   I1 : $SCBranchCtrl);
   let assemblyFormat = "$dataIn attr-dict `:` qualified(type($dataIn)) ";
 }
