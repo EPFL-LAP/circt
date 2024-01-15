@@ -1249,3 +1249,138 @@ def EndOp : Handshake_Op<"end", [Terminator]> {
     mlir::ValueRange getMemoryControls();
   }];
 }
+
+//===----------------------------------------------------------------------===//
+// Speculation operations
+//===----------------------------------------------------------------------===//
+
+def SpeculatorOp : Handshake_Op<"speculator", [ 
+  TypesMatchWith<"data operand type matches data result type",
+                 "dataIn", "dataOut", "$_self">]> {
+  let summary = "Central control unit of the speculative circuit.";
+  let description = [{
+    The speculator produces speculative tokens when real data has
+    not yet arrived. The speculator is also responsible for deciding 
+    the correctness of its speculation.
+
+    It needs to send control tokens to save units and commit units
+    ($saveCtrl, $commitCtrl). For save-commit units, three control
+    signals are needed. $SCSaveCtrl is connected directly, while 
+    $SCCommitCtrl replicates the branches that $dataOut
+    follows and might not reach a save-commit. $SCBranchCtrl is needed
+    in the replicated branches to discard the latter signal.
+
+    Example:
+    ```mlir
+    %dataOut, %saveCtrl, %commitCtrl, %SCSaveCtrl, 
+      %SCCommitCtrl, %SCBranchCtrl = speculator %dataIn : i1
+    ```
+  }];
+
+  let arguments = (ins AnyType : $dataIn);
+  let results = (outs AnyType : $dataOut,
+                  I1 : $saveCtrl, I1 : $commitCtrl, 
+                  I<3> : $SCSaveCtrl, I<3> : $SCCommitCtrl, 
+                  I1 : $SCBranchCtrl);
+  let assemblyFormat = "$dataIn attr-dict `:` qualified(type($dataIn)) ";
+}
+
+def SpecSaveOp : Handshake_Op<"spec_save", [
+  TypesMatchWith<"data operand type matches data result type",
+                 "dataIn", "dataOut", "$_self">] > {
+  let summary = "Saves data tokens that interact in the speculative region.";
+  let description = [{
+    Save units are used to mark the beginning of the speculation region. 
+    Whenever a speculative token can interact with a non-speculative token, 
+    the non-speculative token needs to be saved. In case of correct speculation
+    or no speculation, the saved token can be dropped.
+
+    On the other hand, if the speculation was incorrect, the saved tokens 
+    need to be reinserted into the circuit to repeat the previously 
+    miscalculated computations.
+
+    Example:
+    ```mlir
+    %dataOut = spec_save[%ctrl] %dataIn : i11
+    ```
+  }];
+
+  let arguments = (ins AnyType : $dataIn, I1 : $ctrl);
+  let results = (outs AnyType : $dataOut);
+  let assemblyFormat = " `[` $ctrl `]` $dataIn attr-dict `:` qualified(type($dataIn)) ";
+}
+
+def SpecCommitOp : Handshake_Op<"spec_commit", [
+  TypesMatchWith<"data operand type matches data result type",
+                    "dataIn", "dataOut", "$_self">] > {
+  let summary = "Stall speculative data tokens until they are resolved.";
+  let description = [{
+    Commit units are used to mark the end of the speculation region. 
+    Commit units are used to stall speculative tokens until they receive 
+    the decision from the speculator. In case the speculation is correct, 
+    the speculative tokens are converted into non-speculative tokens and 
+    passed on to the rest of the circuit. 
+    Otherwise, the speculative tokens are discarded. 
+
+    Any non-speculative token can pass through the commit units 
+    without any stall.
+
+    Example:
+    ```mlir
+    %dataOut = spec_commit[%ctrl] %dataIn : i11
+    ```
+  }];
+
+  let arguments = (ins AnyType : $dataIn, I1 : $ctrl);
+  let results = (outs AnyType : $dataOut);
+  let assemblyFormat = " `[` $ctrl `]` $dataIn attr-dict `:` qualified(type($dataIn)) ";
+}
+
+def SpecSaveCommitOp : Handshake_Op<"spec_save_commit", [
+  TypesMatchWith<"data operand type matches data result type",
+                    "dataIn", "dataOut", "$_self">]> {
+  let summary = "Lets all tokens pass and saves a copy of them.";
+  let description = [{
+    Save-Commits are used when speculation occurs in a loop.
+    To increase loop parallelism, the save-commit unit will let both
+    speculative and non-speculative tokens pass as well as save
+    a copy of them.
+ 
+    Example:
+    ```mlir
+    %dataOut = spec_save_commit[%ctrl] %dataIn : i11
+    ```
+  }];
+
+  let arguments = (ins AnyType : $dataIn, I<3> : $ctrl);
+  let results = (outs AnyType : $dataOut);
+  let assemblyFormat = " `[` $ctrl `]` $dataIn attr-dict `:` qualified(type($dataIn)) ";
+}
+
+def SpeculatingBranchOp : Handshake_Op<"speculating_branch", [
+  TypesMatchWith<"data operand type matches true branch result type",
+                    "dataOperand", "trueResult", "$_self">,
+  TypesMatchWith<"data operand type matches false branch result type",
+                    "dataOperand", "falseResult", "$_self">
+]> {
+  let summary = "speculating branch operation";
+  let description = [{
+     The speculating branch operation represents a conditional
+     branch that decides the condition based on if a token Value is
+     speculative or not. 
+
+     The $tagFromOperand field is the condition. Depending on wether the data
+     is speculative or not, $dataOperand will be send to $trueResult or 
+     $falseResult. The speculative tag is a fictious attribute.
+
+     Example:
+     ```mlir
+     %trueResult, %falseResult = 
+       speculating_branch[%tagFromOperand] %dataOperand : i32, i1
+     ```
+  }];
+
+  let arguments = (ins AnyType : $tagFromOperand, AnyType : $dataOperand);
+  let results = (outs AnyType : $trueResult, AnyType : $falseResult);
+  let assemblyFormat = " `[` $tagFromOperand `]` $dataOperand attr-dict `:` qualified(type($tagFromOperand)) `,` qualified(type($dataOperand)) ";
+}
