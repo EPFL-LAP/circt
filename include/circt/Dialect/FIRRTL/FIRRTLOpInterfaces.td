@@ -16,10 +16,11 @@
 include "mlir/IR/OpBase.td"
 include "circt/Dialect/HW/HWOpInterfaces.td"
 
-def FModuleLike : OpInterface<"FModuleLike", [HWModuleLike]> {
+def FModuleLike : OpInterface<"FModuleLike", [Symbol, PortList, InstanceGraphModuleOpInterface]> {
   let cppNamespace = "circt::firrtl";
   let description = "Provide common module information.";
   let methods = [
+
     //===------------------------------------------------------------------===//
     // Parameters
     //===------------------------------------------------------------------===//
@@ -184,6 +185,15 @@ def FModuleLike : OpInterface<"FModuleLike", [HWModuleLike]> {
         !syms[portIndex].template cast<hw::InnerSymAttr>().empty());
     }]>,
 
+    InterfaceMethod<"Get the port symbol attribute",
+    "circt::hw::InnerSymAttr", "getPortSymbolAttr", (ins "size_t":$portIndex), [{}], [{
+      auto syms = $_op.getPortSymbols();
+      if (syms.empty() ||
+          syms[portIndex].template cast<hw::InnerSymAttr>().empty())
+        return hw::InnerSymAttr();
+      return syms[portIndex].template cast<hw::InnerSymAttr>();
+    }]>,
+
     // Setters
     InterfaceMethod<"Set the symbols of all ports and their fields", "void",
     "setPortSymbols", (ins "ArrayRef<Attribute>":$symbols), [{}], [{
@@ -340,13 +350,63 @@ def FModuleLike : OpInterface<"FModuleLike", [HWModuleLike]> {
         ConcreteOp::template hasTrait<::mlir::SymbolOpInterface::Trait>(),
         "expected operation to be a symbol");
     static_assert(
-        ConcreteOp::template hasTrait<::circt::hw::HWModuleLike::Trait>(),
-        "expected operation to be also be a hardware module");
-    static_assert(
         ConcreteOp::template hasTrait<OpTrait::InnerSymbolTable>(),
         "expected operation to be an inner symbol table");
     return verifyModuleLikeOpInterface(cast<::circt::firrtl::FModuleLike>(op));
   }];
+}
+
+def FInstanceLike : OpInterface<"FInstanceLike", [
+  InstanceGraphInstanceOpInterface
+]> {
+  let cppNamespace = "circt::firrtl";
+  let description = "Provide common  instance information.";
+
+  let methods = [
+    InterfaceMethod<"Get the name of the instantiated module",
+    "::llvm::StringRef", "getReferencedModuleName", (ins),
+    /*methodBody=*/[{}],
+    /*defaultImplementation=*/[{ return $_op.getModuleName(); }]>,
+
+    InterfaceMethod<"Get the name of the instantiated module",
+    "::mlir::StringAttr", "getReferencedModuleNameAttr", (ins),
+    /*methodBody=*/[{}],
+    /*defaultImplementation=*/[{ return $_op.getModuleNameAttr().getAttr(); }]>,
+
+    InterfaceMethod<"Get the referenced module via a symbol table.",
+    "::mlir::Operation *", "getReferencedOperation",
+    (ins "const SymbolTable&":$symtbl),
+    /*methodBody=*/[{}],
+    /*defaultImplementation=*/[{
+      return symtbl.lookup($_op.getReferencedModuleName());
+    }]>,
+  ];
+}
+
+def ClassLike : OpInterface<"ClassLike", [FModuleLike]> {
+  let cppNamespace = "circt::firrtl";
+  let description = "Provide common class information.";
+  let methods = [
+    InterfaceMethod<
+      "Get the type for instances of this class",
+      "ClassType", "getInstanceType", (ins),
+      /*methodBody=*/[{}],
+      /*defaultImplementation=*/[{
+        return detail::getInstanceTypeForClassLike($_op);
+      }]
+    >,
+    InterfaceMethod<
+      "Verify that the given type agrees with this class",
+      "LogicalResult", "verifyType", (ins
+        "::circt::firrtl::ClassType":$type,
+        "::llvm::function_ref<::mlir::InFlightDiagnostic()>":$emitError
+      ),
+      /*methodBody=*/[{}],
+      /*defaultImplementation=*/[{
+        return detail::verifyTypeAgainstClassLike($_op, type, emitError);
+      }]
+    >
+  ];
 }
 
 def FConnectLike : OpInterface<"FConnectLike"> {
@@ -382,11 +442,12 @@ def FNamableOp : OpInterface<"FNamableOp"> {
              getAttrOfType<NameKindEnumAttr>("nameKind").getValue()
              == NameKindEnum::DroppableName;
     }]>,
-    InterfaceMethod<"Make the name droppable.",
+    InterfaceMethod<"Completely drop a name.",
     "void", "dropName", (ins), [{}], /*defaultImplementation=*/[{
       this->getOperation()->setAttr("nameKind",
         NameKindEnumAttr::get(this->getOperation()->getContext(),
                               NameKindEnum::DroppableName));
+      this->getOperation()->setAttr("name", StringAttr::get(this->getOperation()->getContext(), ""));
     }]>,
     InterfaceMethod<"Set a namekind.",
     "void", "setNameKindAttr", (ins "firrtl::NameKindEnumAttr":$nameKind),
@@ -429,7 +490,7 @@ def Forceable : OpInterface<"Forceable"> {
     }]>,
     InterfaceMethod<"Return data type that will be referenced.",
     "FIRRTLBaseType", "getDataType", (ins), [{}], /*defaultImplementation=*/[{
-      return cast<FIRRTLBaseType>($_op.getDataRaw().getType());
+      return firrtl::type_cast<FIRRTLBaseType>($_op.getDataRaw().getType());
     }]>,
     InterfaceMethod<"Return reference result, or null if not active.",
     "mlir::TypedValue<RefType>", "getDataRef", (ins), [{}], /*defaultImplementation=*/[{

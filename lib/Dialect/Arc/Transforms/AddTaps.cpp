@@ -6,20 +6,32 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetails.h"
+#include "circt/Dialect/Arc/ArcOps.h"
+#include "circt/Dialect/Arc/ArcPasses.h"
 #include "circt/Dialect/SV/SVOps.h"
+#include "circt/Dialect/Seq/SeqOps.h"
+#include "mlir/Pass/Pass.h"
+
+namespace circt {
+namespace arc {
+#define GEN_PASS_DEF_ADDTAPS
+#include "circt/Dialect/Arc/ArcPasses.h.inc"
+} // namespace arc
+} // namespace circt
 
 using namespace circt;
 using namespace arc;
 using namespace hw;
-using llvm::Optional;
 
 namespace {
-struct AddTapsPass : public AddTapsBase<AddTapsPass> {
+struct AddTapsPass : public arc::impl::AddTapsBase<AddTapsPass> {
+  using AddTapsBase::AddTapsBase;
+
   void runOnOperation() override {
     getOperation().walk([&](Operation *op) {
-      TypeSwitch<Operation *>(op).Case<HWModuleOp, sv::WireOp, hw::WireOp>(
-          [&](auto op) { tap(op); });
+      TypeSwitch<Operation *>(op)
+          .Case<HWModuleOp, sv::WireOp, hw::WireOp>([&](auto op) { tap(op); })
+          .Default([&](auto) { tapIfNamed(op); });
     });
   }
 
@@ -28,18 +40,19 @@ struct AddTapsPass : public AddTapsBase<AddTapsPass> {
     if (!tapPorts)
       return;
     auto *outputOp = moduleOp.getBodyBlock()->getTerminator();
-    ModulePortInfo ports = moduleOp.getPorts();
+    ModulePortInfo ports(moduleOp.getPortList());
 
     // Add taps to inputs.
     auto builder = OpBuilder::atBlockBegin(moduleOp.getBodyBlock());
-    for (auto [port, arg] : llvm::zip(ports.inputs, moduleOp.getArguments()))
-      builder.create<arc::TapOp>(arg.getLoc(), arg, port.getName());
+    for (auto [port, arg] :
+         llvm::zip(ports.getInputs(), moduleOp.getBodyBlock()->getArguments()))
+      buildTap(builder, arg.getLoc(), arg, port.getName());
 
     // Add taps to outputs.
     builder.setInsertionPoint(outputOp);
     for (auto [port, result] :
-         llvm::zip(ports.outputs, outputOp->getOperands()))
-      builder.create<arc::TapOp>(result.getLoc(), result, port.getName());
+         llvm::zip(ports.getOutputs(), outputOp->getOperands()))
+      buildTap(builder, result.getLoc(), result, port.getName());
   }
 
   // Add taps for SV wires.
@@ -52,37 +65,41 @@ struct AddTapsPass : public AddTapsBase<AddTapsPass> {
         readOp = op;
 
     OpBuilder builder(wireOp);
-    if (!readOp) {
-      builder.setInsertionPointAfter(wireOp);
+    if (!readOp)
       readOp = builder.create<sv::ReadInOutOp>(wireOp.getLoc(), wireOp);
-    }
-
-    builder.setInsertionPointAfter(readOp);
-    builder.create<arc::TapOp>(readOp.getLoc(), readOp, wireOp.getName());
+    buildTap(builder, readOp.getLoc(), readOp, wireOp.getName());
   }
 
   // Add taps for HW wires.
   void tap(hw::WireOp wireOp) {
-    if (!tapWires)
-      return;
-    if (auto name = wireOp.getName()) {
+    if (auto name = wireOp.getName(); name && tapWires) {
       OpBuilder builder(wireOp);
-      builder.setInsertionPointAfter(wireOp);
-      builder.create<arc::TapOp>(wireOp.getLoc(), wireOp, *name);
+      buildTap(builder, wireOp.getLoc(), wireOp, *name);
+    }
+    wireOp.getResult().replaceAllUsesWith(wireOp.getInput());
+    wireOp->erase();
+  }
+
+  // Add taps for named values.
+  void tapIfNamed(Operation *op) {
+    if (!tapNamedValues || op->getNumResults() != 1)
+      return;
+    if (auto name = op->getAttrOfType<StringAttr>("sv.namehint")) {
+      OpBuilder builder(op);
+      buildTap(builder, op->getLoc(), op->getResult(0), name);
     }
   }
 
-  using AddTapsBase::tapPorts;
-  using AddTapsBase::tapWires;
+  void buildTap(OpBuilder &builder, Location loc, Value value, StringRef name) {
+    if (name.empty())
+      return;
+    if (isa<seq::ClockType>(value.getType()))
+      value = builder.createOrFold<seq::FromClockOp>(loc, value);
+    builder.create<arc::TapOp>(loc, value, name);
+  }
 };
 } // namespace
 
-std::unique_ptr<Pass> arc::createAddTapsPass(Optional<bool> tapPorts,
-                                             Optional<bool> tapWires) {
-  auto pass = std::make_unique<AddTapsPass>();
-  if (tapPorts)
-    pass->tapPorts = *tapPorts;
-  if (tapWires)
-    pass->tapWires = *tapWires;
-  return pass;
+std::unique_ptr<Pass> arc::createAddTapsPass(const AddTapsOptions &options) {
+  return std::make_unique<AddTapsPass>(options);
 }

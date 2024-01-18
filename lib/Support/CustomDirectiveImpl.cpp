@@ -58,6 +58,9 @@ void circt::printImplicitSSAName(OpAsmPrinter &printer, Operation *op,
   llvm::raw_svector_ostream tmpStream(resultNameStr);
   printer.printOperand(op->getResult(0), tmpStream);
   auto actualName = tmpStream.str().drop_front();
+  // Optional names are printed as digits.
+  if (!attr)
+    return;
   auto expectedName = attr.getValue();
   // Anonymous names are printed as digits, which is fine.
   if (actualName == expectedName ||
@@ -87,4 +90,51 @@ void circt::elideImplicitSSAName(OpAsmPrinter &printer, Operation *op,
   if (actualName == expectedName ||
       (expectedName.empty() && isdigit(actualName[0])))
     elides.push_back("name");
+}
+
+ParseResult circt::parseOptionalBinaryOpTypes(OpAsmParser &parser, Type &lhs,
+                                              Type &rhs) {
+  if (parser.parseType(lhs))
+    return failure();
+
+  // Parse an optional rhs type.
+  if (parser.parseOptionalComma()) {
+    rhs = lhs;
+  } else {
+    if (parser.parseType(rhs))
+      return failure();
+  }
+  return success();
+}
+
+void circt::printOptionalBinaryOpTypes(OpAsmPrinter &p, Operation *op, Type lhs,
+                                       Type rhs) {
+  p << lhs;
+  // If operand types are not same, print a rhs type.
+  if (lhs != rhs)
+    p << ", " << rhs;
+}
+
+ParseResult circt::parseKeywordBool(OpAsmParser &parser, BoolAttr &attr,
+                                    StringRef trueKeyword,
+                                    StringRef falseKeyword) {
+  if (succeeded(parser.parseOptionalKeyword(trueKeyword))) {
+    attr = BoolAttr::get(parser.getContext(), true);
+  } else if (succeeded(parser.parseOptionalKeyword(falseKeyword))) {
+    attr = BoolAttr::get(parser.getContext(), false);
+  } else {
+    return parser.emitError(parser.getCurrentLocation())
+           << "expected keyword \"" << trueKeyword << "\" or \"" << falseKeyword
+           << "\"";
+  }
+  return success();
+}
+
+void circt::printKeywordBool(OpAsmPrinter &printer, Operation *op,
+                             BoolAttr attr, StringRef trueKeyword,
+                             StringRef falseKeyword) {
+  if (attr.getValue())
+    printer << trueKeyword;
+  else
+    printer << falseKeyword;
 }

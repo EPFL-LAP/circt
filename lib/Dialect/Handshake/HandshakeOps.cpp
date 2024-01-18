@@ -24,7 +24,6 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/FunctionImplementation.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/OpDefinition.h"
@@ -32,6 +31,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Transforms/InliningUtils.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -1469,12 +1469,12 @@ LogicalResult ReturnOp::verify() {
 //============================================================================//
 
 /// Finds the type of operation that produces the input by backtracking the
-/// def-use chain through potential bitwidth modification and/or forK
+/// def-use chain through potential bitwidth modification and/or fork
 /// operations.
 static Operation *backtrackToMemInput(Value input) {
   Operation *inputOp = input.getDefiningOp();
-  while (llvm::isa_and_nonnull<arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
-                               handshake::ForkOp>(inputOp))
+  while (isa_and_present<arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
+                         handshake::ForkOp>(inputOp))
     inputOp = inputOp->getOperand(0).getDefiningOp();
   return inputOp;
 }

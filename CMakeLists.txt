@@ -49,14 +49,11 @@ if( CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR )
 # Options and settings
 #-------------------------------------------------------------------------------
 
-  option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
-  option(LLVM_BUILD_TOOLS "Build the LLVM tools. If OFF, just generate build targets." ON)
-
-if (MSVC)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHs-c- /GR-")
-else ()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions -fno-rtti")
-endif ()
+  if (MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHs-c- /GR-")
+  else ()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions -fno-rtti")
+  endif ()
 
 #-------------------------------------------------------------------------------
 # MLIR/LLVM Configuration
@@ -84,12 +81,16 @@ endif ()
   # Handle unittests when building out-of-tree against an installed version of
   # LLVM/MLIR (not a build tree). Adapted from `llvm/flang/CMakeLists.txt`.
   set(CIRCT_GTEST_AVAILABLE 0)
-  set(UNITTEST_DIR ${LLVM_THIRD_PARTY_DIR}/unittest)
-  if (NOT EXISTS ${UNITTEST_DIR}/googletest/include/gtest/gtest.h)
-    set(UNITTEST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/llvm/third-party/unittest)
-  endif()
-  if (EXISTS ${UNITTEST_DIR}/googletest/include/gtest/gtest.h)
-    if (NOT TARGET llvm_gtest)
+  if (TARGET llvm_gtest)
+    # Installed gtest, via LLVM_INSTALL_GTEST.  Preferred.
+    message(STATUS "LLVM GTest found, enabling unittests")
+    set(CIRCT_GTEST_AVAILABLE 1)
+  else()
+    set(UNITTEST_DIR ${LLVM_THIRD_PARTY_DIR}/unittest)
+    if (NOT EXISTS ${UNITTEST_DIR}/googletest/include/gtest/gtest.h)
+      set(UNITTEST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/llvm/third-party/unittest)
+    endif()
+    if (EXISTS ${UNITTEST_DIR}/googletest/include/gtest/gtest.h)
       find_package(Threads)
       add_llvm_library(llvm_gtest
         ${UNITTEST_DIR}/googletest/src/gtest-all.cc
@@ -112,12 +113,12 @@ endif ()
         LINK_COMPONENTS Support # llvm::cl
         BUILDTREE_ONLY
       )
+      set(CIRCT_GTEST_AVAILABLE 1)
+    else()
+      message(WARNING "Skipping unittests since LLVM install does not include \
+        gtest headers and libraries")
+      set(CIRCT_GTEST_AVAILABLE 0)
     endif()
-    set(CIRCT_GTEST_AVAILABLE 1)
-  else()
-    message(WARNING "Skipping unittests since LLVM install does not include \
-      gtest headers and libraries")
-    set(CIRCT_GTEST_AVAILABLE 0)
   endif()
 
 else()
@@ -168,6 +169,12 @@ set(CIRCT_LIBRARY_DIR ${CMAKE_BINARY_DIR}/lib)
 set(CIRCT_TOOLS_DIR ${CMAKE_BINARY_DIR}/bin)
 set(CIRCT_UTILS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/utils)
 set(CIRCT_PYTHON_PACKAGES_DIR ${CIRCT_BINARY_DIR}/python_packages)
+
+
+option(CIRCT_INCLUDE_TOOLS "Generate build targets for the CIRCT tools." ON)
+option(CIRCT_BUILD_TOOLS "Build the CIRCT tools. If OFF, just generate build targets." ON)
+set(CIRCT_TOOLS_INSTALL_DIR "${CMAKE_INSTALL_BINDIR}" CACHE PATH
+    "Path for binary subdirectory (defaults to '${CMAKE_INSTALL_BINDIR}')")
 
 list(APPEND CMAKE_MODULE_PATH "${MLIR_MAIN_SRC_DIR}/cmake/modules")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
@@ -405,32 +412,6 @@ else()
 endif()
 
 #-------------------------------------------------------------------------------
-# capnp Configuration
-#-------------------------------------------------------------------------------
-
-# If capnp hasn't been explicitly disabled, find it.
-option(CAPNP_DISABLE "Disable Cap'nProto (needed for cosimulation).")
-if (CAPNP_DISABLE)
-  message (STATUS "Disabling Cap'nProto.")
-else()
-  if(DEFINED CAPNP_PATH)
-    set(ENV{PKG_CONFIG_PATH}
-      "${CAPNP_PATH}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
-    find_package(CapnProto CONFIG PATHS ${CAPNP_PATH})
-  else()
-    set(ENV{PKG_CONFIG_PATH}
-      "${CMAKE_CURRENT_SOURCE_DIR}/ext/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
-    find_package(CapnProto CONFIG PATHS "${CMAKE_CURRENT_SOURCE_DIR}/ext")
-  endif()
-
-  if(CapnProto_FOUND)
-    message(STATUS "Found Cap'nProto at ${CapnProto_DIR}.")
-    set(CMAKE_INSTALL_RPATH ${capnp_LIBDIR})
-    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-  endif()
-endif()
-
-#-------------------------------------------------------------------------------
 # OR-Tools Configuration
 #-------------------------------------------------------------------------------
 
@@ -475,6 +456,7 @@ llvm_canonicalize_cmake_booleans(CIRCT_LLHD_SIM_ENABLED)
 #-------------------------------------------------------------------------------
 # circt-lec Configuration
 #-------------------------------------------------------------------------------
+
 # If circt-lec hasn't been explicitly disabled, find it.
 option(CIRCT_LEC_DISABLE "Disable the Logical Equivalence Checker" OFF)
 if(CIRCT_LEC_DISABLE)
@@ -489,15 +471,9 @@ else()
       get_target_property(Z3_LIB_LOCATION z3::libz3 IMPORTED_LOCATION_DEBUG)
       message(STATUS "Found Z3: ${Z3_LIB_LOCATION} (found version \"${Z3_VERSION_STRING}\")")
     endif()
-    # Link against the reported library and include locations.
-    list(APPEND CIRCT_LEC_LIBS ${Z3_LIBRARIES})
-    list(APPEND CIRCT_LEC_INCLUDES ${Z3_CXX_INCLUDE_DIRS})
   else()
     # Attempt initialising Z3 according to LLVM's `FindZ3` CMake module.
     find_package(Z3)
-    # Link against the reported library and include locations.
-    list(APPEND CIRCT_LEC_LIBS ${Z3_LIBRARIES})
-    list(APPEND CIRCT_LEC_INCLUDES ${Z3_INCLUDE_DIR})
   endif()
   
   if(Z3_FOUND)
@@ -553,7 +529,9 @@ endif()
 
 add_subdirectory(include/circt)
 add_subdirectory(lib)
-add_subdirectory(tools)
+if(CIRCT_INCLUDE_TOOLS)
+  add_subdirectory(tools)
+endif()
 if (CIRCT_GTEST_AVAILABLE)
   add_subdirectory(unittests)
 endif()

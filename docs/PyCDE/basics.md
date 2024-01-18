@@ -71,7 +71,7 @@ Since CIRCT primarily targets hardware not software, it defines its own types.
 PyCDE exposes them through the `pycde.types.Type` class hierarchy.  PyCDE
 signals represent values on the target device. Signals have a particular `Type`
 (which is distinct from the signal objects' Python `type`) stored in their
-`type` instance member. `Type`s are heretofor referred to interchangably as
+`type` instance member. `Type`s are heretofor referred to interchangeably as
 "PyCDE type", "CIRCT type", or "Type".
 
 All signals extend the `pycde.signals.Signal` class, specialized by their Type.
@@ -246,6 +246,50 @@ uniqueness).
 PyCDE does not produce parameterized SystemVerilog modules! The specialization
 happens with Python code, which is far more powerful than SystemVerilog
 parameterization constructs.
+
+## External parameterized modules
+
+Just like internally defined parameterized modules, leave off the generator and
+PyCDE will output SystemVerilog instantations with the module parameters. The
+parameter types are best effort based on the first instantiation encountered.
+
+```python
+from pycde import modparams, Module
+
+@modparams
+def AddInts(width: int):
+
+  class AddInts(Module):
+    a = Input(UInt(width))
+    b = Input(UInt(width))
+    c = Output(UInt(width + 1))
+
+  return AddInts
+
+
+class Top(Module):
+  a = Input(UInt(32))
+  b = Input(UInt(32))
+  c = Output(UInt(33))
+
+  @generator
+  def construct(self):
+    add_ints_m = AddInts(32)
+    add_ints = add_ints_m(a=self.a, b=self.b)
+    self.c = add_ints.c
+```
+
+For the instantiation produces:
+
+```verilog
+  AddInts #(
+    .width(64'd32)
+  ) AddInts (
+    .a (a),
+    .b (b),
+    .c (c)
+  );
+```
 
 ## Using CIRCT dialects directly (instead of with PyCDE syntactic sugar)
 

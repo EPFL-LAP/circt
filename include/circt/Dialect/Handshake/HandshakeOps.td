@@ -22,6 +22,19 @@ include "mlir/IR/BuiltinAttributeInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "circt/Dialect/Handshake/HandshakeAttributes.td"
 
+// @mortbopet: some kind of support for interfaces as parent ops is currently
+// being tracked here: https://github.com/llvm/llvm-project/pull/66196
+class HasParentInterface<string interface>
+    : ParamNativeOpTrait<"HasParentInterface", interface>, StructuralOpTrait {}
+
+// Base class for Handshake dialect ops.
+class Handshake_Op<string mnemonic, list<Trait> traits = []>
+    : Op<Handshake_Dialect, mnemonic,
+         traits #[HasParentInterface<"FineGrainedDataflowRegionOpInterface">,
+         DeclareOpInterfaceMethods<NamedIOInterface>,
+         DeclareOpInterfaceMethods<ControlInterface>]> {
+}
+
 // This is almost exactly like a standard FuncOp, except that it has some
 // extra verification conditions.  In particular, each Value must
 // only have a single use.  Also, it defines a Dominance-Free Scope
@@ -31,7 +44,8 @@ def FuncOp : Op<Handshake_Dialect, "func", [
    Symbol,
    RegionKindInterface,
    OpAsmOpInterface,
-   HasClock
+   HasClock,
+   FineGrainedDataflowRegionOpInterface
 ]> {
   let summary = "Handshake dialect function.";
   let description = [{
@@ -62,6 +76,11 @@ def FuncOp : Op<Handshake_Dialect, "func", [
 
     /// Implement RegionKindInterface.
     static RegionKind getRegionKind(unsigned index) { return RegionKind::Graph; }
+
+    /// Returns the region on the current operation that is callable.
+    ::mlir::Region *getCallableRegion() {
+      return &getBody();
+    }
 
     /// Returns the argument types of this function.
     ArrayRef<Type> getArgumentTypes() { return getFunctionType().getInputs(); }
@@ -105,6 +124,11 @@ def FuncOp : Op<Handshake_Dialect, "func", [
             "requires '" + getFunctionTypeAttrName().getValue() +
             "' attribute of function type");
       return success();
+    }
+
+    /// Returns the body block of the function.
+    Block* getBodyBlock() {
+      return &getBody().front();
     }
 
     //===------------------------------------------------------------------===//
@@ -180,10 +204,20 @@ def InstanceOp : Handshake_Op<"instance", [
       return (*this)->getAttrOfType<SymbolRefAttr>("module");
     }
 
+    /// Set the callee for this operation.
+    void setCalleeFromCallable(mlir::CallInterfaceCallable callee) {
+      (*this)->setAttr(getModuleAttrName(), callee.get<mlir::SymbolRefAttr>());
+    }
+
     /// Get the control operand of this instance op
     Value getControl() {
       return getOperands().back();
     }
+
+    MutableOperandRange getArgOperandsMutable() {
+      return getOpOperandsMutable();
+    }
+
   }];
 
   let assemblyFormat = [{
@@ -1006,7 +1040,7 @@ def LSQOp : Handshake_Op<"lsq", [
   let builders = [
     OpBuilder<(ins  "Value":$memref, "ValueRange":$inputs, 
                     "ArrayRef<unsigned>":$groupSizes, "unsigned":$numLoads)>,
-    OpBuilder<(ins  "circt::handshake::MemoryControllerOp":$mcOp, 
+    OpBuilder<(ins  "::circt::handshake::MemoryControllerOp":$mcOp, 
                     "ValueRange":$inputs, "ArrayRef<unsigned>":$groupSizes, 
                     "unsigned":$numLoads)>,
   ];

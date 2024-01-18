@@ -22,8 +22,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "PassDetails.h"
+
 #include "circt/Dialect/FIRRTL/FIRRTLUtils.h"
 #include "circt/Dialect/FIRRTL/Passes.h"
+#include "circt/Support/Debug.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
@@ -79,7 +81,7 @@ bool MergeConnection::peelConnect(StrictConnectOp connect) {
   // partial connect. Also ignore non-passive connections or non-integer
   // connections.
   LLVM_DEBUG(llvm::dbgs() << "Visiting " << connect << "\n");
-  auto destTy = connect.getDest().getType().dyn_cast<FIRRTLBaseType>();
+  auto destTy = type_dyn_cast<FIRRTLBaseType>(connect.getDest().getType());
   if (!destTy || !destTy.isPassive() ||
       !firrtl::getBitWidth(destTy).has_value())
     return false;
@@ -109,9 +111,9 @@ bool MergeConnection::peelConnect(StrictConnectOp connect) {
   // If it is the first time to visit the parent op, then allocate the vector
   // for subconnections.
   if (count == 0) {
-    if (auto bundle = parent.getType().dyn_cast<BundleType>())
+    if (auto bundle = type_dyn_cast<BundleType>(parent.getType()))
       subConnections.resize(bundle.getNumElements());
-    if (auto vector = parent.getType().dyn_cast<FVectorType>())
+    if (auto vector = type_dyn_cast<FVectorType>(parent.getType()))
       subConnections.resize(vector.getNumElements());
   }
   ++count;
@@ -121,9 +123,14 @@ bool MergeConnection::peelConnect(StrictConnectOp connect) {
   if (count != subConnections.size())
     return false;
 
-  changed = true;
-
   auto parentType = parent.getType();
+  auto parentBaseTy = type_dyn_cast<FIRRTLBaseType>(parentType);
+
+  // Reject if not passive, we don't support aggregate constants for these.
+  if (!parentBaseTy || !parentBaseTy.isPassive())
+    return false;
+
+  changed = true;
 
   auto getMergedValue = [&](auto aggregateType) {
     SmallVector<Value> operands;
@@ -212,7 +219,7 @@ bool MergeConnection::peelConnect(StrictConnectOp connect) {
         subConnections[idx].erase();
     }
 
-    return parentType.isa<FVectorType>()
+    return isa<FVectorType>(parentType)
                ? builder->createOrFold<VectorCreateOp>(
                      builder->getFusedLoc(locs), parentType, operands)
                : builder->createOrFold<BundleCreateOp>(
@@ -220,14 +227,20 @@ bool MergeConnection::peelConnect(StrictConnectOp connect) {
   };
 
   Value merged;
-  if (auto bundle = parentType.dyn_cast_or_null<BundleType>())
+  if (auto bundle = type_dyn_cast<BundleType>(parentType))
     merged = getMergedValue(bundle);
-  if (auto vector = parentType.dyn_cast_or_null<FVectorType>())
+  if (auto vector = type_dyn_cast<FVectorType>(parentType))
     merged = getMergedValue(vector);
   if (!merged)
     return false;
 
-  builder->create<StrictConnectOp>(connect.getLoc(), parent, merged);
+  // Emit strict connect if possible, fallback to normal connect.
+  // Don't use emitConnect(), will split the connect apart.
+  if (!parentBaseTy.hasUninferredWidth())
+    builder->create<StrictConnectOp>(connect.getLoc(), parent, merged);
+  else
+    builder->create<ConnectOp>(connect.getLoc(), parent, merged);
+
   return true;
 }
 
@@ -273,9 +286,9 @@ struct MergeConnectionsPass
 } // namespace
 
 void MergeConnectionsPass::runOnOperation() {
-  LLVM_DEBUG(llvm::dbgs() << "===----- Running MergeConnections "
-                             "--------------------------------------===\n"
-                          << "Module: '" << getOperation().getName() << "'\n";);
+  LLVM_DEBUG(debugPassHeader(this)
+             << "\n"
+             << "Module: '" << getOperation().getName() << "'\n");
 
   MergeConnection mergeConnection(getOperation(), enableAggressiveMerging);
   bool changed = mergeConnection.run();

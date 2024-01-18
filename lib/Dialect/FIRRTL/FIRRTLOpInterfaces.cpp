@@ -22,12 +22,41 @@ using namespace mlir;
 using namespace llvm;
 using namespace circt::firrtl;
 
+static LogicalResult verifyNoInputProbes(FModuleLike module) {
+  // Helper to check for input-oriented refs.
+  std::function<bool(Type, bool)> hasInputRef = [&](Type type,
+                                                    bool output) -> bool {
+    auto ftype = type_dyn_cast<FIRRTLType>(type);
+    if (!ftype || !ftype.containsReference())
+      return false;
+    return FIRRTLTypeSwitch<FIRRTLType, bool>(ftype)
+        .Case<RefType>([&](auto reftype) { return !output; })
+        .Case<OpenVectorType>([&](OpenVectorType ovt) {
+          return hasInputRef(ovt.getElementType(), output);
+        })
+        .Case<OpenBundleType>([&](OpenBundleType obt) {
+          for (auto field : obt.getElements())
+            if (hasInputRef(field.type, field.isFlip ^ output))
+              return true;
+          return false;
+        });
+  };
+
+  if (module.isPublic()) {
+    for (auto &pi : module.getPorts()) {
+      if (hasInputRef(pi.type, pi.isOutput()))
+        return emitError(pi.loc, "input probe not allowed on public module");
+    }
+  }
+  return success();
+}
+
 LogicalResult circt::firrtl::verifyModuleLikeOpInterface(FModuleLike module) {
   // Verify port types first.  This is used as the basis for the number of
   // ports required everywhere else.
   auto portTypes = module.getPortTypesAttr();
   if (!portTypes || llvm::any_of(portTypes.getValue(), [](Attribute attr) {
-        return !attr.isa<TypeAttr>();
+        return !isa<TypeAttr>(attr);
       }))
     return module.emitOpError("requires valid port types");
 
@@ -50,7 +79,7 @@ LogicalResult circt::firrtl::verifyModuleLikeOpInterface(FModuleLike module) {
   if (portNames.size() != numPorts)
     return module.emitOpError("requires ") << numPorts << " port names";
   if (llvm::any_of(portNames.getValue(),
-                   [](Attribute attr) { return !attr.isa<StringAttr>(); }))
+                   [](Attribute attr) { return !isa<StringAttr>(attr); }))
     return module.emitOpError("port names should all be string attributes");
 
   // Verify the port annotations.
@@ -62,13 +91,12 @@ LogicalResult circt::firrtl::verifyModuleLikeOpInterface(FModuleLike module) {
     return module.emitOpError("requires ") << numPorts << " port annotations";
   // TODO: Move this into an annotation verifier.
   for (auto annos : portAnnotations.getValue()) {
-    auto arrayAttr = annos.dyn_cast<ArrayAttr>();
+    auto arrayAttr = dyn_cast<ArrayAttr>(annos);
     if (!arrayAttr)
       return module.emitOpError(
           "requires port annotations be array attributes");
-    if (llvm::any_of(arrayAttr.getValue(), [](Attribute attr) {
-          return !attr.isa<DictionaryAttr>();
-        }))
+    if (llvm::any_of(arrayAttr.getValue(),
+                     [](Attribute attr) { return !isa<DictionaryAttr>(attr); }))
       return module.emitOpError(
           "annotations must be dictionaries or subannotations");
   }
@@ -80,7 +108,7 @@ LogicalResult circt::firrtl::verifyModuleLikeOpInterface(FModuleLike module) {
   if (!portSymbols.empty() && portSymbols.size() != numPorts)
     return module.emitOpError("requires ") << numPorts << " port symbols";
   if (llvm::any_of(portSymbols.getValue(), [](Attribute attr) {
-        return !attr || !attr.isa<hw::InnerSymAttr>();
+        return !attr || !isa<hw::InnerSymAttr>(attr);
       }))
     return module.emitOpError("port symbols should all be InnerSym attributes");
 
@@ -91,13 +119,16 @@ LogicalResult circt::firrtl::verifyModuleLikeOpInterface(FModuleLike module) {
   if (portLocs.size() != numPorts)
     return module.emitOpError("requires ") << numPorts << " port locations";
   if (llvm::any_of(portLocs.getValue(), [](Attribute attr) {
-        return !attr || !attr.isa<LocationAttr>();
+        return !attr || !isa<LocationAttr>(attr);
       }))
     return module.emitOpError("port symbols should all be location attributes");
 
   // Verify the body.
   if (module->getNumRegions() != 1)
     return module.emitOpError("requires one region");
+
+  if (failed(verifyNoInputProbes(module)))
+    return failure();
 
   return success();
 }
@@ -109,7 +140,8 @@ LogicalResult circt::firrtl::verifyModuleLikeOpInterface(FModuleLike module) {
 RefType circt::firrtl::detail::getForceableResultType(bool forceable,
                                                       Type type) {
   auto base = dyn_cast_or_null<FIRRTLBaseType>(type);
-  if (!forceable || !base)
+  // TODO: Find a way to not check same things RefType::get/verify does.
+  if (!forceable || !base || base.containsConst())
     return {};
   return circt::firrtl::RefType::get(base.getPassiveType(), forceable);
 }
@@ -122,9 +154,11 @@ LogicalResult circt::firrtl::detail::verifyForceableOp(Forceable op) {
   if (!forceable)
     return success();
   auto data = op.getDataRaw();
-  auto baseType = dyn_cast<FIRRTLBaseType>(data.getType());
+  auto baseType = type_dyn_cast<FIRRTLBaseType>(data.getType());
   if (!baseType)
     return op.emitOpError("has data that is not a base type");
+  if (baseType.containsConst())
+    return op.emitOpError("cannot force a declaration of constant type");
   auto expectedRefType = getForceableResultType(forceable, baseType);
   if (ref.getType() != expectedRefType)
     return op.emitOpError("reference result of incorrect type, found ")
@@ -175,7 +209,7 @@ circt::firrtl::detail::replaceWithNewForceability(Forceable op, bool forceable,
   if (forceable)
     attributes.push_back(forceableMarker);
   else {
-    llvm::erase_value(attributes, forceableMarker);
+    llvm::erase(attributes, forceableMarker);
     assert(attributes.size() != op->getAttrs().size());
   }
 

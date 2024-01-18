@@ -13,6 +13,7 @@
 #ifndef CIRCT_DIALECT_FIRRTL_OPS_H
 #define CIRCT_DIALECT_FIRRTL_OPS_H
 
+#include "circt/Dialect/FIRRTL/CHIRRTLDialect.h"
 #include "circt/Dialect/FIRRTL/FIRRTLDialect.h"
 #include "circt/Dialect/FIRRTL/FIRRTLOpInterfaces.h"
 #include "circt/Dialect/HW/HWOpInterfaces.h"
@@ -20,11 +21,12 @@
 #include "circt/Dialect/HW/InnerSymbolTable.h"
 #include "circt/Dialect/Seq/SeqAttributes.h"
 #include "circt/Support/FieldRef.h"
+#include "circt/Support/InstanceGraph.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/FunctionInterfaces.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/RegionKindInterface.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -32,9 +34,6 @@ namespace circt {
 namespace firrtl {
 
 class StrictConnectOp;
-
-// is the name useless?
-bool isUselessName(circt::StringRef name);
 
 // works for regs, nodes, and wires
 bool hasDroppableName(Operation *op);
@@ -51,20 +50,24 @@ size_t getNumPorts(Operation *op);
 bool isConstant(Operation *op);
 bool isConstant(Value value);
 
-/// Returns true if this is a 'const' type that can only hold compile-time
-/// constant values
-bool isConst(Type type);
-
 /// Returns true if the value results from an expression with duplex flow.
 /// Duplex values have special treatment in bundle connect operations, and
 /// their flip orientation is not used to determine the direction of each
 /// pairwise connect.
 bool isDuplexValue(Value val);
 
-enum class Flow { Source, Sink, Duplex };
+enum class Flow : uint8_t { None, Source, Sink, Duplex };
 
 /// Get a flow's reverse.
 Flow swapFlow(Flow flow);
+
+constexpr bool isValidSrc(Flow flow) {
+  return uint8_t(flow) & uint8_t(Flow::Source);
+}
+
+constexpr bool isValidDst(Flow flow) {
+  return uint8_t(flow) & uint8_t(Flow::Sink);
+}
 
 /// Compute the flow for a Value, \p val, as determined by the FIRRTL
 /// specification.  This recursively walks backwards from \p val to the

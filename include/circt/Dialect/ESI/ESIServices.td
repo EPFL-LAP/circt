@@ -6,8 +6,19 @@
 //
 //===----------------------------------------------------------------------===//
 
-include "circt/Dialect/HW/HWTypes.td"
+#ifndef CIRCT_DIALECT_ESI_SERVICES_TD
+#define CIRCT_DIALECT_ESI_SERVICES_TD
+
 include "mlir/IR/RegionKindInterface.td"
+include "mlir/IR/SymbolInterfaces.td"
+
+include "circt/Dialect/ESI/ESIChannels.td"
+include "circt/Dialect/ESI/ESIInterfaces.td"
+include "circt/Dialect/ESI/ESIManifest.td"
+include "circt/Dialect/ESI/ESITypes.td"
+
+include "circt/Dialect/HW/HWAttributesNaming.td"
+include "circt/Dialect/HW/HWTypes.td"
 
 def CustomServiceDeclOp : ESI_Op<"service.decl",
           [SingleBlock, NoTerminator, HasParent<"::mlir::ModuleOp">,
@@ -37,9 +48,10 @@ def CustomServiceDeclOp : ESI_Op<"service.decl",
 
 def ToServerOp : ESI_Op<"service.to_server",
                         [HasParent<"::circt::esi::CustomServiceDeclOp">]> {
-  let summary = "An ESI service port headed to the service";
+  let summary = "An ESI service bundle being sent to the service";
 
-  let arguments = (ins SymbolNameAttr:$inner_sym, TypeAttr:$toServerType);
+  let arguments = (ins SymbolNameAttr:$inner_sym,
+                       TypeAttrOf<ChannelBundleType>:$toServerType);
   let assemblyFormat = [{
     $inner_sym attr-dict `:` $toServerType
   }];
@@ -47,27 +59,32 @@ def ToServerOp : ESI_Op<"service.to_server",
 
 def ToClientOp : ESI_Op<"service.to_client",
                         [HasParent<"::circt::esi::CustomServiceDeclOp">]> {
-  let summary = "An ESI service port headed to a particular client";
+  let summary = "An ESI service bundle being received by the client";
 
-  let arguments = (ins SymbolNameAttr:$inner_sym, TypeAttr:$toClientType);
+  let arguments = (ins SymbolNameAttr:$inner_sym,
+                       TypeAttrOf<ChannelBundleType>:$toClientType);
   let assemblyFormat = [{
     $inner_sym  attr-dict `:` $toClientType
   }];
 }
 
-def ServiceDeclInOutOp : ESI_Op<"service.inout",
-                        [HasParent<"::circt::esi::CustomServiceDeclOp">]> {
-  let summary = "An ESI service port which has both directions";
+def ESIAnyType : ESI_Type<"Any"> {
+  let summary = "any type";
+  let description = [{
+    Used to state that any type is accepted in a service port declaration. The
+    specific type will be determined later in compilation.
+  }];
 
-  let arguments = (ins SymbolNameAttr:$inner_sym,
-                       TypeAttr:$toServerType, TypeAttr:$toClientType);
-  let assemblyFormat = [{
-    $inner_sym attr-dict
-    `:` qualified($toServerType) `->` qualified($toClientType)
+  let mnemonic = "any";
+  let assemblyFormat = "";
+
+  let extraClassDeclaration = [{
+    static AnyType get(MLIRContext *context);
   }];
 }
 
-def ServiceInstanceOp : ESI_Op<"service.instance"> {
+def ServiceInstanceOp : ESI_Op<"service.instance", [
+        DeclareOpInterfaceMethods<HasAppIDOpInterface>]> {
   let summary = "Instantiate a server module";
   let description = [{
     Instantiate a service adhering to a service declaration interface.
@@ -89,18 +106,21 @@ def ServiceInstanceOp : ESI_Op<"service.instance"> {
     implementation to use for this service.
   }];
 
-  let arguments = (ins OptionalAttr<FlatSymbolRefAttr>:$service_symbol,
+  let arguments = (ins AppIDAttr:$appID,
+                       OptionalAttr<FlatSymbolRefAttr>:$service_symbol,
                        StrAttr:$impl_type,
                        OptionalAttr<DictionaryAttr>:$impl_opts,
                        Variadic<AnyType>:$inputs);
   let results = (outs Variadic<AnyType>);
   let assemblyFormat = [{
-    (`svc` $service_symbol^)? `impl` `as` $impl_type (`opts` $impl_opts^)?
-      `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+    qualified($appID) (`svc` $service_symbol^)? `impl` `as` $impl_type
+      (`opts` $impl_opts^)? `(` $inputs `)`
+      attr-dict `:` functional-type($inputs, results)
   }];
 }
 
-def ServiceImplementReqOp : ESI_Op<"service.impl_req", [NoTerminator]> {
+def ServiceImplementReqOp : ESI_Op<"service.impl_req", [
+        NoTerminator, DeclareOpInterfaceMethods<HasAppIDOpInterface>]> {
   let summary = "Request for a service to be implemented";
   let description = [{
     The connect services pass replaces `service.instance`s with this op. The
@@ -113,81 +133,66 @@ def ServiceImplementReqOp : ESI_Op<"service.impl_req", [NoTerminator]> {
     implementation.
   }];
 
-  let arguments = (ins OptionalAttr<FlatSymbolRefAttr>:$service_symbol,
+  let arguments = (ins AppIDAttr:$appID,
+                       OptionalAttr<FlatSymbolRefAttr>:$service_symbol,
                        StrAttr:$impl_type,
+                       OptionalAttr<StrAttr>:$stdService,
                        OptionalAttr<DictionaryAttr>:$impl_opts,
                        Variadic<AnyType>:$inputs);
   let results = (outs Variadic<AnyType>:$outputs);
   let regions = (region SizedRegion<1>:$portReqs);
 
-  let extraClassDeclaration = [{
-    /// Find pairs of toServer and toClient requests with the same client path.
-    /// In cases where there doesn't exist a pair, one of the two entries will
-    /// be null. Should never contain a pair with both entries null.
-    void gatherPairedReqs(
-      llvm::SmallVectorImpl<std::pair<RequestToServerConnectionOp,
-                                      RequestToClientConnectionOp>>&);
-  }];
-
   let assemblyFormat = [{
-    (`svc` $service_symbol^)? `impl` `as` $impl_type (`opts` $impl_opts^)?
-     `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+    qualified($appID) (`svc` $service_symbol^)? `impl` `as` $impl_type
+      (`std` $stdService^)? (`opts` $impl_opts^)? `(` $inputs `)`
+      attr-dict `:` functional-type($inputs, results)
       $portReqs
   }];
 }
 
+def ServiceImplementConnReqOp : ESI_Op<"service.impl_req.req", [
+        DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let summary = "The canonical form of a connection request";
+
+  let arguments = (ins InnerRefAttr:$servicePort,
+                       AppIDArrayAttr:$relativeAppIDPath);
+  let results = (outs ChannelBundleType:$toClient);
+  let assemblyFormat = [{
+    $servicePort `(` $relativeAppIDPath `)`
+      attr-dict `:` qualified(type($toClient))
+  }];
+
+  let extraClassDeclaration = [{
+    ChannelBundleType getBundleType() { return getToClient().getType(); }
+  }];
+}
+
 def RequestToServerConnectionOp : ESI_Op<"service.req.to_server", [
+        DeclareOpInterfaceMethods<HasAppIDOpInterface>,
         DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Request a connection to send data";
 
-  let arguments = (ins HWInnerRefAttr:$servicePort,
-                       ChannelType:$toServer, StrArrayAttr:$clientNamePath);
+  let arguments = (ins InnerRefAttr:$servicePort,
+                       ChannelBundleType:$toServer,
+                       AppIDAttr:$appID);
   let assemblyFormat = [{
-    $toServer `->` $servicePort `(` $clientNamePath `)`
+    $toServer `->` $servicePort `(` qualified($appID) `)`
       attr-dict `:` qualified(type($toServer))
   }];
 }
 
 def RequestToClientConnectionOp : ESI_Op<"service.req.to_client", [
+        DeclareOpInterfaceMethods<HasAppIDOpInterface>,
         DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Request a connection to receive data";
 
-  let arguments = (ins HWInnerRefAttr:$servicePort,
-                       StrArrayAttr:$clientNamePath);
-  let results = (outs ChannelType:$toClient);
+  let arguments = (ins InnerRefAttr:$servicePort,
+                       AppIDAttr:$appID);
+  let results = (outs ChannelBundleType:$toClient);
   let assemblyFormat = [{
-    $servicePort `(` $clientNamePath `)`
+    $servicePort `(` qualified($appID) `)`
       attr-dict `:` qualified(type($toClient))
   }];
 }
 
-def RequestInOutChannelOp : ESI_Op<"service.req.inout", [
-        DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
-  let summary = "Request a bidirectional channel";
-
-  let arguments = (ins HWInnerRefAttr:$servicePort,
-                       ChannelType:$toServer,
-                       StrArrayAttr:$clientNamePath);
-  let results = (outs ChannelType:$toClient);
-
-  let assemblyFormat = [{
-    $toServer `->` $servicePort `(` $clientNamePath `)` attr-dict `:`
-      qualified(type($toServer)) `->` qualified(type($toClient))
-  }];
-}
-
-def ServiceHierarchyMetadataOp : ESI_Op<"service.hierarchy.metadata", [
-        DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
-  let summary = "Metadata about a service in the service hierarchy";
-
-  let arguments = (ins OptionalAttr<FlatSymbolRefAttr>:$service_symbol,
-                       ArrayAttr:$serverNamePath,
-                       StrAttr:$impl_type,
-                       OptionalAttr<DictionaryAttr>:$impl_details,
-                       ArrayAttr:$clients);
-  let assemblyFormat = [{
-    `path` $serverNamePath (`implementing` $service_symbol^)?
-      `impl` `as` $impl_type (`opts` $impl_details^)?
-      `clients` $clients attr-dict 
-  }];
-}
+#endif // CIRCT_DIALECT_ESI_SERVICES_TD

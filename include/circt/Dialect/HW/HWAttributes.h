@@ -19,25 +19,18 @@ class PEOAttr;
 class EnumType;
 enum class PEO : uint32_t;
 
-// Eventually move this to an op trait
-struct InnerName {
-  static llvm::StringRef getInnerNameAttrName() { return "inner_sym"; }
-};
-
-// Forward declaration.
-class GlobalRefOp;
-
 /// Returns a resolved version of 'type' wherein any parameter reference
 /// has been evaluated based on the set of provided 'parameters'.
 mlir::FailureOr<mlir::Type> evaluateParametricType(mlir::Location loc,
                                                    mlir::ArrayAttr parameters,
-                                                   mlir::Type type);
+                                                   mlir::Type type,
+                                                   bool emitErrors = true);
 
 /// Evaluates a parametric attribute (param.decl.ref/param.expr) based on a set
 /// of provided parameter values.
 mlir::FailureOr<mlir::TypedAttr>
 evaluateParametricAttr(mlir::Location loc, mlir::ArrayAttr parameters,
-                       mlir::Attribute paramAttr);
+                       mlir::Attribute paramAttr, bool emitErrors = true);
 
 /// Returns true if any part of t is parametric.
 bool isParametricType(mlir::Type t);

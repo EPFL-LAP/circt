@@ -15,6 +15,7 @@
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
 #include "circt/Support/LLVM.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
+#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/JSON.h"
@@ -275,7 +276,7 @@ ParseResult circt::firrtl::foldWhenEncodedVerifOp(PrintFOp printOp) {
     flavor = VerifFlavor::Cover;
   else if (fmt.consume_front("assertNotX:"))
     flavor = VerifFlavor::AssertNotX;
-  else if (fmt.startswith("Assertion failed"))
+  else if (fmt.starts_with("Assertion failed"))
     flavor = VerifFlavor::ChiselAssert;
   else
     return success();

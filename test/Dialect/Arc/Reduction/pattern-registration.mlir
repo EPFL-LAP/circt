@@ -6,13 +6,18 @@
 
 // RUN: circt-reduce %s --test /usr/bin/env --test-arg cat --list | FileCheck %s
 
-// CHECK: arc-strip-sv
+// CHECK: hw-
+// CHECK: hw-
+// CHECK: hw-
+// CHECK-NEXT: arc-strip-sv
 // CHECK-NEXT: cse
+// CHECK-NEXT: hw-
 // CHECK-NEXT: arc-dedup
 // CHECK-NEXT: canonicalize
+// CHECK-NEXT: hw-
 // CHECK-NEXT: arc-state-elimination
 // CHECK-NEXT: operation-pruner
-// CHECK-NEXT: arc-sink-inputs
+// CHECK-NEXT: arc-canonicalizer
 // CHECK-EMPTY:
 arc.define @DummyArc(%arg0: i32) -> i32 {
   arc.output %arg0 : i32

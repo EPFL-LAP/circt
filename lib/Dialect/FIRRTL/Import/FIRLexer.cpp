@@ -111,15 +111,15 @@ std::string FIRToken::getStringValue(StringRef spelling) {
   return result;
 }
 
-/// Given a token containing a raw string, return its value, including removing
-/// the quote characters and unescaping the quotes of the string. The lexer has
-/// already verified that this token is valid.
-std::string FIRToken::getRawStringValue() const {
-  assert(getKind() == raw_string);
-  return getRawStringValue(getSpelling());
+/// Given a token containing a verbatim string, return its value, including
+/// removing the quote characters and unescaping the quotes of the string. The
+/// lexer has already verified that this token is valid.
+std::string FIRToken::getVerbatimStringValue() const {
+  assert(getKind() == verbatim_string);
+  return getVerbatimStringValue(getSpelling());
 }
 
-std::string FIRToken::getRawStringValue(StringRef spelling) {
+std::string FIRToken::getVerbatimStringValue(StringRef spelling) {
   // Start by dropping the quotes.
   StringRef bytes = spelling.drop_front().drop_back();
 
@@ -251,6 +251,8 @@ FIRToken FIRLexer::lexTokenImpl() {
     case ')':
       return formToken(FIRToken::r_paren, tokStart);
     case '{':
+      if (*curPtr == '|')
+        return ++curPtr, formToken(FIRToken::l_brace_bar, tokStart);
       return formToken(FIRToken::l_brace, tokStart);
     case '}':
       return formToken(FIRToken::r_brace, tokStart);
@@ -281,18 +283,23 @@ FIRToken FIRLexer::lexTokenImpl() {
       if (*curPtr == '[')
         return lexInlineAnnotation(tokStart);
       return emitError(tokStart, "unexpected character following '%'");
+    case '|':
+      if (*curPtr == '}')
+        return ++curPtr, formToken(FIRToken::r_brace_bar, tokStart);
+      // Unknown character, emit an error.
+      return emitError(tokStart, "unexpected character");
 
     case ';':
       skipComment();
       continue;
 
     case '"':
-      return lexString(tokStart, /*isRaw=*/false);
+      return lexString(tokStart, /*isVerbatim=*/false);
     case '\'':
-      return lexString(tokStart, /*isRaw=*/true);
+      return lexString(tokStart, /*isVerbatim=*/true);
 
-    case '+':
     case '-':
+    case '+':
     case '0':
     case '1':
     case '2':
@@ -452,21 +459,21 @@ void FIRLexer::skipComment() {
   }
 }
 
-/// StringLit      ::= '"' UnquotedString? '"'
-/// RawString      ::= '\'' UnquotedString? '\''
-/// UnquotedString ::= ( '\\\'' | '\\"' | ~[\r\n] )+?
+/// StringLit         ::= '"' UnquotedString? '"'
+/// VerbatimStringLit ::= '\'' UnquotedString? '\''
+/// UnquotedString    ::= ( '\\\'' | '\\"' | ~[\r\n] )+?
 ///
-FIRToken FIRLexer::lexString(const char *tokStart, bool isRaw) {
+FIRToken FIRLexer::lexString(const char *tokStart, bool isVerbatim) {
   while (1) {
     switch (*curPtr++) {
     case '"': // This is the end of the string literal.
-      if (isRaw)
+      if (isVerbatim)
         break;
       return formToken(FIRToken::string, tokStart);
     case '\'': // This is the end of the raw string.
-      if (!isRaw)
+      if (!isVerbatim)
         break;
-      return formToken(FIRToken::raw_string, tokStart);
+      return formToken(FIRToken::verbatim_string, tokStart);
     case '\\':
       // Ignore escaped '\'' or '"'
       if (*curPtr == '\'' || *curPtr == '"')
@@ -502,6 +509,8 @@ FIRToken FIRLexer::lexString(const char *tokStart, bool isRaw) {
 ///       ( '+' | '-' )? Digit+ '.' Digit+ ( 'E' ( '+' | '-' )? Digit+ )?
 ///   TripleLit ::=
 ///       Digit+ '.' Digit+ '.' Digit+
+///   Radix-specified Integer ::=
+///       ( '-' )? '0' ( 'b' | 'o' | 'd' | 'h' ) LegalDigit*
 ///
 FIRToken FIRLexer::lexNumber(const char *tokStart) {
   assert(llvm::isDigit(curPtr[-1]) || curPtr[-1] == '+' || curPtr[-1] == '-');
@@ -509,6 +518,40 @@ FIRToken FIRLexer::lexNumber(const char *tokStart) {
   // There needs to be at least one digit.
   if (!llvm::isDigit(*curPtr) && !llvm::isDigit(curPtr[-1]))
     return emitError(tokStart, "unexpected character after sign");
+
+  // If we encounter a "b", "o", "d", or "h", this is a radix-specified integer
+  // literal.  This is only supported for FIRRTL 2.4.0 or later.  This is always
+  // lexed, but rejected during parsing if the version is too old.
+  const char *oldPtr = curPtr;
+  if (curPtr[-1] == '-' && *curPtr == '0')
+    ++curPtr;
+  if (curPtr[-1] == '0') {
+    switch (*curPtr) {
+    case 'b':
+      ++curPtr;
+      while (*curPtr >= '0' && *curPtr <= '1')
+        ++curPtr;
+      return formToken(FIRToken::radix_specified_integer, tokStart);
+    case 'o':
+      ++curPtr;
+      while (*curPtr >= '0' && *curPtr <= '7')
+        ++curPtr;
+      return formToken(FIRToken::radix_specified_integer, tokStart);
+    case 'd':
+      ++curPtr;
+      while (llvm::isDigit(*curPtr))
+        ++curPtr;
+      return formToken(FIRToken::radix_specified_integer, tokStart);
+    case 'h':
+      ++curPtr;
+      while (llvm::isHexDigit(*curPtr))
+        ++curPtr;
+      return formToken(FIRToken::radix_specified_integer, tokStart);
+    default:
+      curPtr = oldPtr;
+      break;
+    }
+  }
 
   while (llvm::isDigit(*curPtr))
     ++curPtr;

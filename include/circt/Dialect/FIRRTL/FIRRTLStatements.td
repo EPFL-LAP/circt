@@ -17,6 +17,8 @@ include "FIRRTLDialect.td"
 include "FIRRTLEnums.td"
 include "FIRRTLOpInterfaces.td"
 include "FIRRTLTypes.td"
+include "circt/Dialect/HW/HWTypes.td"
+include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def AttachOp : FIRRTLOp<"attach"> {
@@ -50,12 +52,17 @@ def ConnectOp : FIRRTLOp<"connect", [FConnectLike]> {
   let hasCanonicalizer = true;
 }
 
-def StrictConnectOp : FIRRTLOp<"strictconnect", [SameTypeOperands, FConnectLike]> {
+def SameAnonTypeOperands: PredOpTrait<
+        "operands must be structurally equivalent",
+        CPred<"areAnonymousTypesEquivalent(getOperand(0).getType(), getOperand(1).getType())">>;
+def StrictConnectOp : FIRRTLOp<"strictconnect", [FConnectLike,
+                      SameAnonTypeOperands]> {
   let summary = "Connect two signals";
   let description =  [{
     Connect two values with strict constraints:
     ```
       firrtl.strictconnect %dest, %src : t1
+      firrtl.strictconnect %dest, %src : t1, !firrtl.alias<foo, t1>
     ```
     }];
 
@@ -65,9 +72,8 @@ def StrictConnectOp : FIRRTLOp<"strictconnect", [SameTypeOperands, FConnectLike]
   let hasCanonicalizeMethod = true;
 
   let hasVerifier = 1;
-
-  let assemblyFormat =
-    "$dest `,` $src  attr-dict `:` qualified(type($dest))";
+  let assemblyFormat = [{$dest `,` $src  attr-dict `:`
+      custom<OptionalBinaryOpTypes>(type($dest), type($src))}];
 }
 
 def RefDefineOp : FIRRTLOp<"ref.define", [SameTypeOperands, FConnectLike]> {
@@ -175,8 +181,7 @@ def CoverOp : VerifOp<"cover"> {
   let summary = "Cover Verification Statement";
 }
 
-def WhenOp : FIRRTLOp<"when", [SingleBlock, NoTerminator, NoRegionArguments,
-                               RecursiveMemoryEffects, RecursivelySpeculatable]> {
+def WhenOp : FIRRTLOp<"when", [SingleBlock, NoTerminator, NoRegionArguments]> {
   let summary = "When Statement";
   let description = [{
     The "firrtl.when" operation represents a conditional.  Connections within
@@ -189,6 +194,7 @@ def WhenOp : FIRRTLOp<"when", [SingleBlock, NoTerminator, NoRegionArguments,
   let regions = (region SizedRegion<1>:$thenRegion, AnyRegion:$elseRegion);
 
   let skipDefaultBuilders = 1;
+  let hasCanonicalizeMethod = 1;
   let builders = [
     OpBuilder<(ins "Value":$condition, "bool":$withElseRegion,
                       CArg<"std::function<void()>", "{}">:$thenCtor,
@@ -263,11 +269,33 @@ def MatchOp : FIRRTLOp<"match", [SingleBlock, NoTerminator,
 
   let extraClassDeclaration = [{
     IntegerAttr getFieldIndexAttr(size_t caseIndex) {
-      return getTags()[caseIndex].cast<IntegerAttr>();
+      return cast<IntegerAttr>(getTags()[caseIndex]);
     }
 
     uint32_t getFieldIndex(size_t caseIndex) {
       return getFieldIndexAttr(caseIndex).getUInt();
+    }
+  }];
+}
+
+def PropAssignOp : FIRRTLOp<"propassign",
+  [FConnectLike, SameTypeOperands, ParentOneOf<["FModuleOp", "ClassOp"]>]> {
+  let summary = "Assign to a sink property value.";
+  let description = [{
+    Assign an output property value. The types must match exactly.
+
+    Example:
+    ```mlir
+      firrtl.propassign %dest, %src : !firrtl.string
+    ```
+    }];
+  let arguments = (ins PropertyType:$dest, PropertyType:$src);
+  let results = (outs);
+  let hasVerifier = 1;
+  let assemblyFormat = "$dest `,` $src attr-dict `:` qualified(type($dest))";
+  let extraClassDeclaration = [{
+    static ConnectBehaviorKind getConnectBehaviorKind() {
+      return ConnectBehaviorKind::StaticSingleConnect;
     }
   }];
 }
@@ -281,23 +309,12 @@ def ForceOp : FIRRTLOp<"force", [SameTypeOperands]> {
     "$dest `,` $src attr-dict `:` qualified(type($dest)) `,` qualified(type($src))";
 }
 
-def ProbeOp : FIRRTLOp<"probe"> {
-  let summary = "FIRRTL Value Probe";
-  let description = [{
-    Captures values without binding to any accidental name.
-  }];
-  let arguments = (ins SymbolNameAttr:$inner_sym, Variadic<FIRRTLBaseType>:$captured);
-  let results = (outs);
-
-  let assemblyFormat = "$inner_sym attr-dict ( `,` $captured^  `:` qualified(type($captured)))?";
-}
-
 //===- Reference force/release --------------------------------------------===//
 
 class ForceRefTypeConstraint<string ref, string base>
   : TypesMatchWith<"reference type of " # ref # " should be RWProbe of " # base,
                    base, ref,
-                   "RefType::get($_self.cast<FIRRTLBaseType>(), true)">;
+                   "RefType::get(firrtl::type_cast<FIRRTLBaseType>($_self).getAllConstDroppedType(), true)">;
 
 def RefForceOp : FIRRTLOp<"ref.force",[ForceRefTypeConstraint<"dest", "src">]> {
   let summary = "FIRRTL force statement";
@@ -305,6 +322,7 @@ def RefForceOp : FIRRTLOp<"ref.force",[ForceRefTypeConstraint<"dest", "src">]> {
   let arguments = (ins ClockType:$clock, UInt1Type:$predicate, RWProbe:$dest, FIRRTLBaseType:$src);
   let assemblyFormat =
     "$clock `,` $predicate `,` $dest `,` $src attr-dict `:` type($clock) `,` type($predicate) `,` qualified(type($src))";
+  let hasCanonicalizer = 1;
 }
 def RefForceInitialOp : FIRRTLOp<"ref.force_initial",[ForceRefTypeConstraint<"dest", "src">]> {
   let summary = "FIRRTL force_initial statement";
@@ -312,6 +330,7 @@ def RefForceInitialOp : FIRRTLOp<"ref.force_initial",[ForceRefTypeConstraint<"de
   let arguments = (ins UInt1Type:$predicate, RWProbe:$dest, FIRRTLBaseType:$src);
   let assemblyFormat =
     "$predicate `,` $dest `,` $src attr-dict `:` type($predicate) `,` qualified(type($src))";
+  let hasCanonicalizer = 1;
 }
 def RefReleaseOp : FIRRTLOp<"ref.release"> {
   let summary = "FIRRTL release statement";
@@ -319,12 +338,80 @@ def RefReleaseOp : FIRRTLOp<"ref.release"> {
   let arguments = (ins ClockType:$clock, UInt1Type:$predicate, RWProbe:$dest);
   let assemblyFormat =
     "$clock `,` $predicate `,` $dest attr-dict `:` type($clock) `,` type($predicate) `,` qualified(type($dest))";
+  let hasCanonicalizer = 1;
 }
 def RefReleaseInitialOp : FIRRTLOp<"ref.release_initial"> {
   let summary = "FIRRTL release_initial statement";
   let description = "Release the target RWProbe.";
   let arguments = (ins UInt1Type:$predicate, RWProbe:$dest);
   let assemblyFormat = "$predicate `,` $dest attr-dict `:` type($predicate) `,` qualified(type($dest))";
+  let hasCanonicalizer = 1;
+}
+
+def XMRRefOp : FIRRTLOp<"xmr.ref"> {
+  let summary = "FIRRTL XMR operation, targetable by ref ops.";
+  let arguments = (ins FlatSymbolRefAttr:$ref, DefaultValuedAttr<StrAttr, "{}">:$verbatimSuffix);
+  let results = (outs RefType:$dest);
+  let assemblyFormat = "$ref (`,` $verbatimSuffix^)? attr-dict `:` qualified(type($dest))";
+}
+
+def XMRDerefOp : FIRRTLOp<"xmr.deref"> {
+  let summary = "FIRRTL XMR operation, reading an XMR target.";
+  let arguments = (ins FlatSymbolRefAttr:$ref, DefaultValuedAttr<StrAttr, "{}">:$verbatimSuffix);
+  let results = (outs PassiveType:$dest);
+  let assemblyFormat = "$ref (`,` $verbatimSuffix^)? attr-dict `:` qualified(type($dest))";
+}
+
+//===----------------------------------------------------------------------===//
+// Verif Dialect Intrinsics
+//===----------------------------------------------------------------------===//
+
+class VerifIntrinsicOp<string mnemonic, list<Trait> traits = []> :
+    FIRRTLOp<"int.verif." # mnemonic, traits> {
+  let summary = "FIRRTL variant of `verif." # mnemonic # "`";
+  let description = "See `verif." # mnemonic # "` op in the Verif dialect.";
+  let arguments = (ins UInt1Type:$property, OptionalAttr<StrAttr>:$label);
+  let assemblyFormat = [{
+    operands attr-dict `:` type(operands)
+  }];
+}
+
+def VerifAssertIntrinsicOp : VerifIntrinsicOp<"assert">;
+def VerifAssumeIntrinsicOp : VerifIntrinsicOp<"assume">;
+def VerifCoverIntrinsicOp : VerifIntrinsicOp<"cover">;
+
+//===----------------------------------------------------------------------===//
+// Layer Block Op
+//===----------------------------------------------------------------------===//
+
+def LayerBlockOp : FIRRTLOp<
+  "layerblock",
+  [SingleBlock, NoTerminator, NoRegionArguments,
+   ParentOneOf<["firrtl::FModuleOp", "firrtl::LayerBlockOp"]>,
+   DeclareOpInterfaceMethods<SymbolUserOpInterface>]
+> {
+  let summary = "A definition of a layer block";
+  let description = [{
+    The `firrtl.layerblock` operation defines optional code that is
+    conditionally part of a `firrtl.module` if its referenced `firrtl.layer` is
+    enabled.  This is typically used to store verification or debugging code
+    that is lowered to a module that is "enabled" using the `firrtl.layer`'s
+    convention (e.g., remote instantiation via SystemVerilog `bind`).  A layer
+    block can read from (capture) values defined in parent layer blocks or in
+    the parent module, but may not write to hardware declared outside the layer
+    block.
+
+    A `firrtl.layerblock` must refer to an existing layer definition
+    (`firrtl.layer`) via a symbol reference.  A nested `firrtl.layerblock`
+    refers to a nested layer definition via a nested symbol reference.
+  }];
+  let arguments = (ins SymbolRefAttr:$layerName);
+  let results = (outs);
+  let regions = (region SizedRegion<1>:$region);
+  let assemblyFormat = [{
+    $layerName $region attr-dict
+  }];
+  let hasVerifier = 1;
 }
 
 #endif // CIRCT_DIALECT_FIRRTL_FIRRTLSTATEMENTS_TD

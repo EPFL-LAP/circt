@@ -8,9 +8,10 @@
 
 #include "circt/Dialect/Arc/ArcOps.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/FunctionImplementation.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 using namespace circt;
@@ -43,8 +44,8 @@ static LogicalResult verifyTypeListEquivalence(Operation *op,
   return success();
 }
 
-static LogicalResult verifyArcSymbolUse(Operation *op, ValueRange inputs,
-                                        ValueRange results,
+static LogicalResult verifyArcSymbolUse(Operation *op, TypeRange inputs,
+                                        TypeRange results,
                                         SymbolTableCollection &symbolTable) {
   // Check that the arc attribute was specified.
   auto arcName = op->getAttrOfType<FlatSymbolRefAttr>("arc");
@@ -58,12 +59,12 @@ static LogicalResult verifyArcSymbolUse(Operation *op, ValueRange inputs,
 
   // Verify that the operand and result types match the arc.
   auto type = arc.getFunctionType();
-  if (failed(verifyTypeListEquivalence(op, type.getInputs(), inputs.getTypes(),
-                                       "operand")))
+  if (failed(
+          verifyTypeListEquivalence(op, type.getInputs(), inputs, "operand")))
     return failure();
 
-  if (failed(verifyTypeListEquivalence(op, type.getResults(),
-                                       results.getTypes(), "result")))
+  if (failed(
+          verifyTypeListEquivalence(op, type.getResults(), results, "result")))
     return failure();
 
   return success();
@@ -130,26 +131,13 @@ bool DefineOp::isPassthrough() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult OutputOp::verify() {
-  return success();
+  auto *parent = (*this)->getParentOp();
+  TypeRange expectedTypes = parent->getResultTypes();
+  if (auto defOp = dyn_cast<DefineOp>(parent))
+    expectedTypes = defOp.getResultTypes();
 
-  auto parent = cast<DefineOp>((*this)->getParentOp());
-  ArrayRef<Type> types = parent.getResultTypes();
-  OperandRange values = getOperands();
-  if (types.size() != values.size()) {
-    emitOpError("must have same number of operands as parent arc has results");
-    return failure();
-  }
-
-  for (size_t i = 0, e = types.size(); i < e; ++i) {
-    if (types[i] != values[i].getType()) {
-      emitOpError("output operand ")
-          << i << " type mismatch: arc requires " << types[i] << ", operand is "
-          << values[i].getType();
-      return failure();
-    }
-  }
-
-  return success();
+  TypeRange actualTypes = getOperands().getTypes();
+  return verifyTypeListEquivalence(*this, expectedTypes, actualTypes, "output");
 }
 
 //===----------------------------------------------------------------------===//
@@ -157,23 +145,16 @@ LogicalResult OutputOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult StateOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  return verifyArcSymbolUse(*this, getInputs(), getResults(), symbolTable);
+  return verifyArcSymbolUse(*this, getInputs().getTypes(),
+                            getResults().getTypes(), symbolTable);
 }
 
 LogicalResult StateOp::verify() {
-  if (getLatency() > 0 && !getOperation()->getParentOfType<ClockDomainOp>() &&
-      !getClock())
-    return emitOpError(
-        "with non-zero latency outside a clock domain requires a clock");
+  if (getLatency() < 1)
+    return emitOpError("latency must be a positive integer");
 
-  if (getLatency() == 0) {
-    if (getClock())
-      return emitOpError("with zero latency cannot have a clock");
-    if (getEnable())
-      return emitOpError("with zero latency cannot have an enable");
-    if (getReset())
-      return emitOpError("with zero latency cannot have a reset");
-  }
+  if (!getOperation()->getParentOfType<ClockDomainOp>() && !getClock())
+    return emitOpError("outside a clock domain requires a clock");
 
   if (getOperation()->getParentOfType<ClockDomainOp>() && getClock())
     return emitOpError("inside a clock domain cannot have a clock");
@@ -186,30 +167,42 @@ LogicalResult StateOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  return verifyArcSymbolUse(*this, getInputs(), getResults(), symbolTable);
+  return verifyArcSymbolUse(*this, getInputs().getTypes(),
+                            getResults().getTypes(), symbolTable);
 }
 
-//===----------------------------------------------------------------------===//
-// MemoryReadPortOp
-//===----------------------------------------------------------------------===//
+bool CallOp::isClocked() { return false; }
 
-LogicalResult MemoryReadPortOp::verify() {
-  if (!getOperation()->getParentOfType<ClockDomainOp>() && !getClock())
-    return emitOpError("outside a clock domain requires a clock");
+Value CallOp::getClock() { return Value{}; }
 
-  if (getOperation()->getParentOfType<ClockDomainOp>() && getClock())
-    return emitOpError("inside a clock domain cannot have a clock");
+void CallOp::eraseClock() {}
 
-  return success();
-}
+uint32_t CallOp::getLatency() { return 0; }
 
 //===----------------------------------------------------------------------===//
 // MemoryWritePortOp
 //===----------------------------------------------------------------------===//
 
+SmallVector<Type> MemoryWritePortOp::getArcResultTypes() {
+  auto memType = cast<MemoryType>(getMemory().getType());
+  SmallVector<Type> resultTypes{memType.getAddressType(),
+                                memType.getWordType()};
+  if (getEnable())
+    resultTypes.push_back(IntegerType::get(getContext(), 1));
+  if (getMask())
+    resultTypes.push_back(memType.getWordType());
+  return resultTypes;
+}
+
+LogicalResult
+MemoryWritePortOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  return verifyArcSymbolUse(*this, getInputs().getTypes(), getArcResultTypes(),
+                            symbolTable);
+}
+
 LogicalResult MemoryWritePortOp::verify() {
-  if (getMask() && getMask().getType() != getData().getType())
-    return emitOpError("mask and data operand types do not match");
+  if (getLatency() < 1)
+    return emitOpError("latency must be at least 1");
 
   if (!getOperation()->getParentOfType<ClockDomainOp>() && !getClock())
     return emitOpError("outside a clock domain requires a clock");
@@ -225,15 +218,8 @@ LogicalResult MemoryWritePortOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult ClockDomainOp::verifyRegions() {
-  if (failed(verifyTypeListEquivalence(*this, getBodyBlock().getArgumentTypes(),
-                                       getInputs().getTypes(), "input")))
-    return failure();
-  if (failed(verifyTypeListEquivalence(
-          *this, getOutputs().getTypes(),
-          getBodyBlock().getTerminator()->getOperandTypes(), "output")))
-    return failure();
-
-  return success();
+  return verifyTypeListEquivalence(*this, getBodyBlock().getArgumentTypes(),
+                                   getInputs().getTypes(), "input");
 }
 
 //===----------------------------------------------------------------------===//
@@ -295,6 +281,148 @@ LogicalResult LutOp::verify() {
            << "first operation with side-effects here";
 
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// VectorizeOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult VectorizeOp::verify() {
+  if (getInputs().empty())
+    return emitOpError("there has to be at least one input vector");
+
+  if (!llvm::all_equal(llvm::map_range(
+          getInputs(), [](OperandRange range) { return range.size(); })))
+    return emitOpError("all input vectors must have the same size");
+
+  for (OperandRange range : getInputs()) {
+    if (!llvm::all_equal(range.getTypes()))
+      return emitOpError("all input vector lane types must match");
+
+    if (range.empty())
+      return emitOpError("input vector must have at least one element");
+  }
+
+  if (getInputs().front().size() > 1 &&
+      !isa<IntegerType>(getInputs().front().front().getType()))
+    return emitOpError("input vector element type must be a signless integer");
+
+  if (getResults().empty())
+    return emitOpError("must have at least one result");
+
+  if (!llvm::all_equal(getResults().getTypes()))
+    return emitOpError("all result types must match");
+
+  if (getResults().size() != getInputs().front().size())
+    return emitOpError("number results must match input vector size");
+
+  if (getResults().size() > 1 &&
+      !isa<IntegerType>(getResults().front().getType()))
+    return emitError(
+        "may only return a vector type if boundary is already vectorized");
+
+  return success();
+}
+
+static FailureOr<unsigned> getVectorWidth(Type base, Type vectorized) {
+  if (isa<VectorType>(base))
+    return failure();
+
+  if (auto vectorTy = dyn_cast<VectorType>(vectorized)) {
+    if (vectorTy.getElementType() != base)
+      return failure();
+
+    return vectorTy.getDimSize(0);
+  }
+
+  if (vectorized.getIntOrFloatBitWidth() < base.getIntOrFloatBitWidth())
+    return failure();
+
+  if (vectorized.getIntOrFloatBitWidth() % base.getIntOrFloatBitWidth() == 0)
+    return vectorized.getIntOrFloatBitWidth() / base.getIntOrFloatBitWidth();
+
+  return failure();
+}
+
+LogicalResult VectorizeOp::verifyRegions() {
+  auto returnOp = cast<VectorizeReturnOp>(getBody().front().getTerminator());
+  TypeRange bodyArgTypes = getBody().front().getArgumentTypes();
+
+  if (bodyArgTypes.size() != getInputs().size())
+    return emitOpError(
+        "number of block arguments must match number of input vectors");
+
+  // Boundary and body are vectorized, or both are not vectorized
+  if (returnOp.getValue().getType() == getResultTypes().front()) {
+    for (auto [i, argTy] : llvm::enumerate(bodyArgTypes))
+      if (argTy != getInputs()[i].getTypes().front())
+        return emitOpError("if terminator type matches result type the "
+                           "argument types must match the input types");
+
+    return success();
+  }
+
+  // Boundary is vectorized, body is not
+  if (auto width = getVectorWidth(returnOp.getValue().getType(),
+                                  getResultTypes().front());
+      succeeded(width)) {
+    for (auto [i, argTy] : llvm::enumerate(bodyArgTypes)) {
+      Type inputTy = getInputs()[i].getTypes().front();
+      FailureOr<unsigned> argWidth = getVectorWidth(argTy, inputTy);
+      if (failed(argWidth))
+        return emitOpError("block argument must be a scalar variant of the "
+                           "vectorized operand");
+
+      if (*argWidth != width)
+        return emitOpError("input and output vector width must match");
+    }
+
+    return success();
+  }
+
+  // Body is vectorized, boundary is not
+  if (auto width = getVectorWidth(getResultTypes().front(),
+                                  returnOp.getValue().getType());
+      succeeded(width)) {
+    for (auto [i, argTy] : llvm::enumerate(bodyArgTypes)) {
+      Type inputTy = getInputs()[i].getTypes().front();
+      FailureOr<unsigned> argWidth = getVectorWidth(inputTy, argTy);
+      if (failed(argWidth))
+        return emitOpError(
+            "block argument must be a vectorized variant of the operand");
+
+      if (*argWidth != width)
+        return emitOpError("input and output vector width must match");
+
+      if (getInputs()[i].size() > 1 && argWidth != getInputs()[i].size())
+        return emitOpError(
+            "when boundary not vectorized the number of vector element "
+            "operands must match the width of the vectorized body");
+    }
+
+    return success();
+  }
+
+  return returnOp.emitOpError(
+      "operand type must match parent op's result value or be a vectorized or "
+      "non-vectorized variant of it");
+}
+
+bool VectorizeOp::isBoundaryVectorized() {
+  return getInputs().front().size() == 1;
+}
+bool VectorizeOp::isBodyVectorized() {
+  auto returnOp = cast<VectorizeReturnOp>(getBody().front().getTerminator());
+  if (isBoundaryVectorized() &&
+      returnOp.getValue().getType() == getResultTypes().front())
+    return true;
+
+  if (auto width = getVectorWidth(getResultTypes().front(),
+                                  returnOp.getValue().getType());
+      succeeded(width))
+    return *width > 1;
+
+  return false;
 }
 
 #include "circt/Dialect/Arc/ArcInterfaces.cpp.inc"

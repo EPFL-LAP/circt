@@ -6,25 +6,34 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetails.h"
+#include "circt/Dialect/Arc/ArcOps.h"
+#include "circt/Dialect/Arc/ArcPasses.h"
 #include "circt/Dialect/Comb/CombOps.h"
+#include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/SV/SVOps.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
+#include "mlir/Pass/Pass.h"
 #include "llvm/Support/Debug.h"
 #include <variant>
 
 #define DEBUG_TYPE "arc-strip-sv"
 
+namespace circt {
+namespace arc {
+#define GEN_PASS_DEF_STRIPSV
+#include "circt/Dialect/Arc/ArcPasses.h.inc"
+} // namespace arc
+} // namespace circt
+
 using namespace circt;
 using namespace arc;
 
 namespace {
-struct StripSVPass : public StripSVBase<StripSVPass> {
+struct StripSVPass : public arc::impl::StripSVBase<StripSVPass> {
   void runOnOperation() override;
   SmallVector<Operation *> opsToDelete;
   SmallPtrSet<StringAttr, 4> clockGateModuleNames;
-  SmallPtrSet<StringAttr, 4> externModuleNames;
 };
 } // namespace
 
@@ -32,7 +41,6 @@ void StripSVPass::runOnOperation() {
   auto mlirModule = getOperation();
   opsToDelete.clear();
   clockGateModuleNames.clear();
-  externModuleNames.clear();
 
   auto expectedClockGateInputs =
       ArrayAttr::get(&getContext(), {StringAttr::get(&getContext(), "in"),
@@ -44,40 +52,38 @@ void StripSVPass::runOnOperation() {
 
   for (auto extModOp : mlirModule.getOps<hw::HWModuleExternOp>()) {
     if (extModOp.getVerilogModuleName() == "EICG_wrapper") {
-      if (extModOp.getArgNames() != expectedClockGateInputs ||
-          extModOp.getResultNames() != expectedClockGateOutputs) {
+      if (!llvm::equal(extModOp.getInputNames(), expectedClockGateInputs) ||
+          !llvm::equal(extModOp.getOutputNames(), expectedClockGateOutputs)) {
         extModOp.emitError("clock gate module `")
             << extModOp.getModuleName() << "` has incompatible port names "
-            << extModOp.getArgNamesAttr() << " -> "
-            << extModOp.getResultNamesAttr();
+            << extModOp.getInputNames() << " -> " << extModOp.getOutputNames();
         return signalPassFailure();
       }
-      if (extModOp.getArgumentTypes() !=
-              ArrayRef<Type>{i1Type, i1Type, i1Type} ||
-          extModOp.getResultTypes() != ArrayRef<Type>{i1Type}) {
+      if (!llvm::equal(extModOp.getInputTypes(),
+                       ArrayRef<Type>{i1Type, i1Type, i1Type}) ||
+          !llvm::equal(extModOp.getOutputTypes(), ArrayRef<Type>{i1Type})) {
         extModOp.emitError("clock gate module `")
             << extModOp.getModuleName() << "` has incompatible port types "
-            << extModOp.getArgumentTypes() << " -> "
-            << extModOp.getResultTypes();
+            << extModOp.getInputTypes() << " -> " << extModOp.getOutputTypes();
         return signalPassFailure();
       }
       clockGateModuleNames.insert(extModOp.getModuleNameAttr());
       opsToDelete.push_back(extModOp);
       continue;
     }
-
-    externModuleNames.insert(extModOp.getModuleNameAttr());
-    if (replaceExtModuleOutputs)
-      opsToDelete.push_back(extModOp);
   }
   LLVM_DEBUG(llvm::dbgs() << "Found " << clockGateModuleNames.size()
-                          << " clock gates, " << externModuleNames.size()
-                          << " other extern modules\n");
+                          << " clock gates\n");
+
+  // Remove OM dialect nodes.
+  for (auto &op : llvm::make_early_inc_range(*mlirModule.getBody()))
+    if (isa<om::OMDialect>(op.getDialect()))
+      op.erase();
 
   // Remove `sv.*` operation attributes.
   mlirModule.walk([](Operation *op) {
     auto isSVAttr = [](NamedAttribute attr) {
-      return attr.getName().getValue().startswith("sv.");
+      return attr.getName().getValue().starts_with("sv.");
     };
     if (llvm::any_of(op->getAttrs(), isSVAttr)) {
       SmallVector<NamedAttribute> newAttrs;
@@ -93,6 +99,8 @@ void StripSVPass::runOnOperation() {
   for (auto verb : mlirModule.getOps<sv::VerbatimOp>())
     opsToDelete.push_back(verb);
   for (auto verb : mlirModule.getOps<sv::IfDefOp>())
+    opsToDelete.push_back(verb);
+  for (auto verb : mlirModule.getOps<sv::MacroDeclOp>())
     opsToDelete.push_back(verb);
 
   for (auto module : mlirModule.getOps<hw::HWModuleOp>()) {
@@ -144,33 +152,23 @@ void StripSVPass::runOnOperation() {
 
         Value compReg = builder.create<seq::CompRegOp>(
             reg.getLoc(), next.getType(), next, reg.getClk(), reg.getNameAttr(),
-            Value{}, Value{}, reg.getInnerSymAttr());
+            Value{}, Value{}, Value{}, reg.getInnerSymAttr());
         reg.replaceAllUsesWith(compReg);
         opsToDelete.push_back(reg);
         continue;
       }
 
-      // Replace clock gate instances with the dedicated arc op and stub
-      // out other external modules.
+      // Replace clock gate instances with the dedicated `seq.clock_gate` op and
+      // stub out other external modules.
       if (auto instOp = dyn_cast<hw::InstanceOp>(&op)) {
         auto modName = instOp.getModuleNameAttr().getAttr();
         ImplicitLocOpBuilder builder(instOp.getLoc(), instOp);
         if (clockGateModuleNames.contains(modName)) {
-          auto enable = builder.createOrFold<comb::OrOp>(
-              instOp.getOperand(1), instOp.getOperand(2), true);
-          auto gated =
-              builder.create<arc::ClockGateOp>(instOp.getOperand(0), enable);
+          auto gated = builder.create<seq::ClockGateOp>(
+              instOp.getOperand(0), instOp.getOperand(1), instOp.getOperand(2),
+              hw::InnerSymAttr{});
           instOp.replaceAllUsesWith(gated);
           opsToDelete.push_back(instOp);
-        } else if (externModuleNames.contains(modName)) {
-          if (replaceExtModuleOutputs) {
-            instOp->emitWarning("StripSV: outputs of external module instance "
-                                "replaced with zero value!");
-            for (auto result : instOp.getResults())
-              result.replaceAllUsesWith(
-                  builder.create<hw::ConstantOp>(result.getType(), 0));
-            opsToDelete.push_back(instOp);
-          }
         }
         continue;
       }

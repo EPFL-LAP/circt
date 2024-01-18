@@ -90,8 +90,12 @@ constexpr const char *verifBlackBoxAnnoClass =
 constexpr const char *metadataDirectoryAttrName =
     "sifive.enterprise.firrtl.MetadataDirAnnotation";
 constexpr const char *noDedupAnnoClass = "firrtl.transforms.NoDedupAnnotation";
+constexpr const char *dedupGroupAnnoClass =
+    "firrtl.transforms.DedupGroupAnnotation";
 constexpr const char *dftTestModeEnableAnnoClass =
     "sifive.enterprise.firrtl.DFTTestModeEnableAnnotation";
+constexpr const char *dftClockDividerBypassAnnoClass =
+    "sifive.enterprise.firrtl.DFTClockDividerBypassAnnotation";
 
 // Grand Central Annotations
 constexpr const char *serializedViewAnnoClass =
